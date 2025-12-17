@@ -1,0 +1,60 @@
+version: 2
+
+project_name: grlog
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  # Library project — no binaries
+  - skip: true
+
+archives:
+  - id: source
+    name_template: "{{ .ProjectName }}_{{ .Version }}_src"
+    formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - go.mod
+      - go.sum
+      - "**/*.go"
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+release:
+  github:
+    owner: gourdian25
+    name: grlog
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} {{ .Version }}"
+  header: |
+    ## {{ .ProjectName }} {{ .Version }}
+
+    Production-ready structured logging library for Go.
+
+    ### Highlights
+    - Zero-allocation typed fields
+    - Async logging with overflow protection
+    - Multi-sink architecture
+    - Extensive benchmarks and race tests
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - '^build:'
+      - '^refactor:'
+      - '^style:'
+      - README
+      - Merge pull request
