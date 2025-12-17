@@ -47,6 +47,7 @@ Real-World Scenarios:
 - [All Available Formatters](#-all-available-formatters)
 - [Complete Configuration Examples](#-complete-configuration-examples)
 - [Advanced Usage](#-advanced-usage)
+- [Production Examples](#-production-examples)
 - [Best Practices](#-best-practices)
 - [Performance & Benchmarks](#-performance--benchmarks)
 - [Testing](#-testing)
@@ -821,7 +822,7 @@ defer logger.Close()
 ```
 
 **Defaults:**
-- Level: DEBUG
+- Level: INFO
 - Sink: StdoutSink
 - Format: Plain text
 - Async: Disabled (synchronous)
@@ -833,6 +834,131 @@ defer logger.Close()
 
 ```go
 // Console logging with debug level
+logger := grlog.NewLogger(
+    grlog.WithLevel(grlog.DEBUG),
+    grlog.WithSink(
+        grlog.NewStdoutSink(grlog.PlainFormat()),
+    ),
+    grlog.WithCaller(true),
+)
+defer logger.Close()
+```
+
+**Best for:**
+- Local development
+- Debugging
+- Testing
+
+---
+
+### 3. Production Configuration (Single File)
+
+```go
+// Production file logging with rotation
+fileSink, err := grlog.NewFileSink(grlog.FileSinkConfig{
+    Filename:    "production",
+    Dir:         "/var/log/myapp",
+    MaxBytes:    100 * 1024 * 1024,  // 100MB
+    BackupCount: 20,
+    Formatter:   grlog.JSONFormat(),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+logger := grlog.NewLogger(
+    grlog.WithLevel(grlog.INFO),
+    grlog.WithSink(fileSink),
+    grlog.WithAsync(10000),
+    grlog.WithCaller(false),  // Better performance
+    grlog.WithContextFields(
+        grlog.String("service", "user-api"),
+        grlog.String("version", "1.0.0"),
+        grlog.String("environment", "production"),
+    ),
+)
+defer logger.Close()
+```
+
+**Best for:**
+- Production servers
+- VMs and bare metal
+- Audit requirements
+
+---
+
+### 4. Cloud-Native Configuration (Stdout JSON)
+
+```go
+// Kubernetes/Docker optimized
+logger := grlog.NewLogger(
+    grlog.WithLevel(grlog.INFO),
+    grlog.WithSink(
+        grlog.NewStdoutSink(grlog.JSONFormat()),
+    ),
+    grlog.WithAsync(5000),
+    grlog.WithCaller(false),
+    grlog.WithContextFields(
+        grlog.String("service", os.Getenv("SERVICE_NAME")),
+        grlog.String("pod", os.Getenv("POD_NAME")),
+        grlog.String("namespace", os.Getenv("NAMESPACE")),
+    ),
+)
+defer logger.Close()
+```
+
+**Best for:**
+- Docker containers
+- Kubernetes pods
+- Cloud platforms (AWS, GCP, Azure)
+
+---
+
+### 5. High-Performance Configuration
+
+```go
+// Optimized for maximum throughput
+logger := grlog.NewLogger(
+    grlog.WithLevel(grlog.WARN),  // Minimal logging
+    grlog.WithSink(
+        grlog.NewStdoutSink(grlog.PlainFormat()),
+    ),
+    grlog.WithAsync(50000),  // Large buffer
+    grlog.WithCaller(false), // No caller overhead
+)
+defer logger.Close()
+```
+
+**Best for:**
+- High-throughput services
+- Performance-critical paths
+- Latency-sensitive applications
+
+---
+
+### 6. Multi-Destination Configuration
+
+```go
+// Console + File + Custom (comprehensive logging)
+stdoutSink := grlog.NewStdoutSink(grlog.PlainFormat())
+
+fileSink, _ := grlog.NewFileSink(grlog.FileSinkConfig{
+    Filename:  "audit",
+    Dir:       "/var/log/audit",
+    MaxBytes:  50 * 1024 * 1024,
+    Formatter: grlog.JSONFormat(),
+})
+
+metricsSink := grlog.NewCustomSink(func(entry grlog.LogEntry) error {
+    // Send metrics
+    if entry.Level >= grlog.ERROR {
+        metrics.IncrementErrorCount()
+    }
+    return nil
+})
+
+multiSink := grlog.NewMultiSink(stdoutSink, fileSink, metricsSink)
+
 logger := grlog.NewLogger(
     grlog.WithLevel(grlog.INFO),
     grlog.WithSink(multiSink),
@@ -1029,6 +1155,9 @@ defer logger.Close()
 
 ```go
 // Production-ready with all features
+hostname, _ := os.Hostname()
+version := "1.2.3"
+
 fileSink, err := grlog.NewFileSink(grlog.FileSinkConfig{
     Filename:    "production",
     Dir:         "/var/log/myapp",
@@ -1039,7 +1168,7 @@ fileSink, err := grlog.NewFileSink(grlog.FileSinkConfig{
         EnableCaller:    false,
         CustomFields: map[string]interface{}{
             "service":     "user-api",
-            "version":     "1.2.3",
+            "version":     version,
             "environment": os.Getenv("ENV"),
             "host":        hostname,
             "pid":         os.Getpid(),
@@ -1159,72 +1288,407 @@ logger.RemoveSink(oldSink)
 
 ---
 
-### HTTP Middleware Example
+## 🏭 Production Examples
+
+### 1. Complete Microservice Setup
 
 ```go
-func LoggingMiddleware(logger *grlog.Logger) func(http.Handler) http.Handler {
+package main
+
+import (
+    "context"
+    "net/http"
+    "os"
+    "os/signal"
+    "syscall"
+    "time"
+    
+    "github.com/gourdian25/grlog"
+)
+
+func main() {
+    // Initialize logger
+    logger := setupLogger()
+    defer logger.Close()
+    
+    logger.Info("Service starting",
+        grlog.String("version", version),
+        grlog.String("env", os.Getenv("ENV")),
+    )
+    
+    // Setup HTTP server
+    mux := http.NewServeMux()
+    mux.HandleFunc("/health", healthCheckHandler(logger))
+    mux.HandleFunc("/api/users", usersHandler(logger))
+    
+    server := &http.Server{
+        Addr:    ":8080",
+        Handler: loggingMiddleware(logger)(mux),
+    }
+    
+    // Start server
+    go func() {
+        if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            logger.Error("Server failed", grlog.Err(err))
+        }
+    }()
+    
+    logger.Info("Server started on :8080")
+    
+    // Graceful shutdown
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+    <-quit
+    
+    logger.Info("Shutting down server...")
+    
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    
+    if err := server.Shutdown(ctx); err != nil {
+        logger.Error("Server forced to shutdown", grlog.Err(err))
+    }
+    
+    logger.Info("Server exited")
+}
+
+func setupLogger() *grlog.Logger {
+    hostname, _ := os.Hostname()
+    
+    fileSink, _ := grlog.NewFileSink(grlog.FileSinkConfig{
+        Filename:    "service",
+        Dir:         "/var/log/myservice",
+        MaxBytes:    100 * 1024 * 1024,
+        BackupCount: 20,
+        Formatter:   grlog.JSONFormat(),
+    })
+    
+    stdoutSink := grlog.NewStdoutSink(grlog.JSONFormat())
+    
+    return grlog.NewLogger(
+        grlog.WithLevel(grlog.INFO),
+        grlog.WithSink(grlog.NewMultiSink(fileSink, stdoutSink)),
+        grlog.WithAsync(10000),
+        grlog.WithContextFields(
+            grlog.String("service", "user-api"),
+            grlog.String("host", hostname),
+        ),
+    )
+}
+
+func loggingMiddleware(logger *grlog.Logger) func(http.Handler) http.Handler {
     return func(next http.Handler) http.Handler {
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
             start := time.Now()
             
-            // Capture response
-            wrapped := &responseWriter{ResponseWriter: w, statusCode: 200}
+            // Generate request ID
+            requestID := generateRequestID()
+            ctx := context.WithValue(r.Context(), "request_id", requestID)
             
-            // Add request context
-            ctx := context.WithValue(r.Context(), "request_id", generateID())
-            requestLogger := logger.WithContext(ctx)
+            // Create request-scoped logger
+            reqLogger := logger.WithContext(ctx)
+            
+            // Wrap response writer
+            wrapped := &responseWriter{ResponseWriter: w, statusCode: 200}
             
             // Process request
             next.ServeHTTP(wrapped, r.WithContext(ctx))
             
             // Log request
-            requestLogger.Info("HTTP request",
+            reqLogger.Info("HTTP request",
                 grlog.String("method", r.Method),
                 grlog.String("path", r.URL.Path),
                 grlog.String("remote_addr", r.RemoteAddr),
                 grlog.Int("status", wrapped.statusCode),
                 grlog.Duration("latency", time.Since(start)),
+                grlog.String("user_agent", r.UserAgent()),
             )
         })
+    }
+}
+
+type responseWriter struct {
+    http.ResponseWriter
+    statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+    rw.statusCode = code
+    rw.ResponseWriter.WriteHeader(code)
+}
+
+func generateRequestID() string {
+    // Your implementation
+    return "req-" + time.Now().Format("20060102150405")
+}
+```
+
+---
+
+### 2. Database Integration Example
+
+```go
+package main
+
+import (
+    "database/sql"
+    "time"
+    
+    "github.com/gourdian25/grlog"
+)
+
+type User struct {
+    ID        int64
+    Email     string
+    CreatedAt time.Time
+}
+
+func CreateUser(db *sql.DB, logger *grlog.Logger, user User) error {
+    start := time.Now()
+    
+    result, err := db.Exec(
+        "INSERT INTO users (email, created_at) VALUES (?, ?)",
+        user.Email, user.CreatedAt,
+    )
+    
+    if err != nil {
+        logger.Error("Failed to create user",
+            grlog.Err(err),
+            grlog.String("email", user.Email),
+            grlog.Duration("duration", time.Since(start)),
+        )
+        return err
+    }
+    
+    id, _ := result.LastInsertId()
+    
+    logger.Info("User created",
+        grlog.Int64("user_id", id),
+        grlog.String("email", user.Email),
+        grlog.Duration("duration", time.Since(start)),
+    )
+    
+    return nil
+}
+
+func GetUser(db *sql.DB, logger *grlog.Logger, id int64) (*User, error) {
+    start := time.Now()
+    
+    var user User
+    err := db.QueryRow(
+        "SELECT id, email, created_at FROM users WHERE id = ?",
+        id,
+    ).Scan(&user.ID, &user.Email, &user.CreatedAt)
+    
+    if err != nil {
+        if err == sql.ErrNoRows {
+            logger.Warn("User not found",
+                grlog.Int64("user_id", id),
+                grlog.Duration("duration", time.Since(start)),
+            )
+        } else {
+            logger.Error("Failed to get user",
+                grlog.Err(err),
+                grlog.Int64("user_id", id),
+                grlog.Duration("duration", time.Since(start)),
+            )
+        }
+        return nil, err
+    }
+    
+    logger.Debug("User retrieved",
+        grlog.Int64("user_id", id),
+        grlog.Duration("duration", time.Since(start)),
+    )
+    
+    return &user, nil
+}
+```
+
+---
+
+### 3. Worker/Background Jobs Example
+
+```go
+package main
+
+import (
+    "context"
+    "time"
+    
+    "github.com/gourdian25/grlog"
+)
+
+type Job struct {
+    ID      string
+    Type    string
+    Payload map[string]interface{}
+}
+
+func ProcessJob(ctx context.Context, logger *grlog.Logger, job Job) error {
+    start := time.Now()
+    
+    logger.Info("Job started",
+        grlog.String("job_id", job.ID),
+        grlog.String("job_type", job.Type),
+    )
+    
+    // Add job context
+    jobLogger := logger.WithContext(ctx)
+    
+    // Process job
+    switch job.Type {
+    case "email":
+        err := sendEmail(jobLogger, job.Payload)
+        if err != nil {
+            jobLogger.Error("Email job failed",
+                grlog.String("job_id", job.ID),
+                grlog.Err(err),
+                grlog.Duration("duration", time.Since(start)),
+            )
+            return err
+        }
+        
+    case "report":
+        err := generateReport(jobLogger, job.Payload)
+        if err != nil {
+            jobLogger.Error("Report job failed",
+                grlog.String("job_id", job.ID),
+                grlog.Err(err),
+                grlog.Duration("duration", time.Since(start)),
+            )
+            return err
+        }
+    }
+    
+    jobLogger.Info("Job completed",
+        grlog.String("job_id", job.ID),
+        grlog.String("job_type", job.Type),
+        grlog.Duration("duration", time.Since(start)),
+    )
+    
+    return nil
+}
+
+func sendEmail(logger *grlog.Logger, payload map[string]interface{}) error {
+    // Implementation
+    logger.Debug("Sending email", grlog.Any("payload", payload))
+    return nil
+}
+
+func generateReport(logger *grlog.Logger, payload map[string]interface{}) error {
+    // Implementation
+    logger.Debug("Generating report", grlog.Any("payload", payload))
+    return nil
+}
+```
+
+---
+
+### 4. Error Tracking Integration
+
+```go
+package main
+
+import (
+    "runtime/debug"
+    
+    "github.com/getsentry/sentry-go"
+    "github.com/gourdian25/grlog"
+)
+
+func LogAndTrackError(logger *grlog.Logger, err error, fields ...grlog.Field) {
+    // Log locally with full context
+    allFields := append(fields,
+        grlog.Err(err),
+        grlog.String("stack_trace", string(debug.Stack())),
+    )
+    
+    logger.Error("Application error", allFields...)
+    
+    // Send to Sentry
+    go func() {
+        sentry.CaptureException(err)
+    }()
+}
+
+func RecoverPanic(logger *grlog.Logger) {
+    if r := recover(); r != nil {
+        logger.Error("Panic recovered",
+            grlog.Any("panic", r),
+            grlog.String("stack", string(debug.Stack())),
+        )
+        
+        // Send to Sentry
+        sentry.CurrentHub().Recover(r)
+        sentry.Flush(2 * time.Second)
+    }
+}
+
+// Usage in HTTP handler
+func SafeHandler(logger *grlog.Logger, fn http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        defer RecoverPanic(logger)
+        fn(w, r)
     }
 }
 ```
 
 ---
 
-### Business Event Logging
+### 5. Metrics Integration Example
 
 ```go
-func LogOrderCreated(logger *grlog.Logger, order Order) {
-    logger.Info("Order created",
-        grlog.String("event", "order.created"),
-        grlog.String("order_id", order.ID),
-        grlog.String("customer_id", order.CustomerID),
-        grlog.Int("item_count", len(order.Items)),
-        grlog.Int64("amount_cents", order.TotalCents),
-        grlog.String("currency", order.Currency),
-        grlog.String("payment_method", order.PaymentMethod),
-    )
-}
-```
+package main
 
----
+import (
+    "time"
+    
+    "github.com/gourdian25/grlog"
+    "github.com/prometheus/client_golang/prometheus"
+)
 
-### Error Tracking Integration
-
-```go
-func LogAndTrackError(logger *grlog.Logger, err error, ctx context.Context) {
-    // Log locally
-    logger.Error("Application error",
-        grlog.Err(err),
-        grlog.String("trace_id", getTraceID(ctx)),
-        grlog.String("stack", string(debug.Stack())),
+var (
+    logCounter = prometheus.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "logs_total",
+            Help: "Total number of log entries by level",
+        },
+        []string{"level"},
     )
     
-    // Send to error tracking service
-    go func() {
-        sentry.CaptureException(err)
-    }()
+    errorLogCounter = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "errors_total",
+            Help: "Total number of errors logged",
+        },
+    )
+)
+
+func init() {
+    prometheus.MustRegister(logCounter, errorLogCounter)
+}
+
+func setupLoggerWithMetrics() *grlog.Logger {
+    // Metrics sink
+    metricsSink := grlog.NewCustomSink(func(entry grlog.LogEntry) error {
+        logCounter.WithLabelValues(entry.Level.String()).Inc()
+        
+        if entry.Level == grlog.ERROR {
+            errorLogCounter.Inc()
+        }
+        
+        return nil
+    })
+    
+    // Regular logging
+    stdoutSink := grlog.NewStdoutSink(grlog.JSONFormat())
+    
+    return grlog.NewLogger(
+        grlog.WithLevel(grlog.INFO),
+        grlog.WithSink(grlog.NewMultiSink(stdoutSink, metricsSink)),
+        grlog.WithAsync(5000),
+    )
 }
 ```
 
@@ -1322,6 +1786,39 @@ func TestMyFunction(t *testing.T) {
         t.Errorf("Expected 1 log, got %d", len(logs))
     }
 }
+```
+
+### 9. Structured Data Guidelines
+
+```go
+// ✅ Good - specific, searchable fields
+logger.Info("Payment processed",
+    grlog.String("payment_id", paymentID),
+    grlog.String("customer_id", customerID),
+    grlog.Int64("amount_cents", amount),
+    grlog.String("currency", currency),
+)
+
+// ❌ Avoid - unstructured message
+logger.Infof("Payment %s processed for customer %s: $%.2f %s",
+    paymentID, customerID, float64(amount)/100, currency)
+```
+
+### 10. Security Considerations
+
+```go
+// ✅ Good - redact sensitive data
+logger.Info("User login",
+    grlog.String("user_id", userID),
+    grlog.String("email", maskEmail(email)),
+    grlog.String("ip", ip),
+)
+
+// ❌ Avoid - logging passwords or tokens
+logger.Info("Authentication",
+    grlog.String("password", password),  // Never!
+    grlog.String("token", token),        // Never!
+)
 ```
 
 ---
@@ -1465,20 +1962,9 @@ MIT License - see [LICENSE](LICENSE) file.
 
 Copyright (c) 2024 grlog Contributors
 
----
+**Permission is hereby granted**, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so.
 
-## 🙏 Acknowledgments
-
-Built with ❤️ for the Go community.
-
-**Core Team:**
-- [@gourdian25](https://github.com/gourdian25) - Core Development
-- [@lordofthemind](https://github.com/lordofthemind) - Performance Tuning
-
-**Thanks to:**
-- All contributors and early adopters
-- The Go team for an amazing language
-- Open source projects that inspired this library
+**See [LICENSE](LICENSE) for full details.**
 
 ---
 
@@ -1492,129 +1978,32 @@ Built with ❤️ for the Go community.
 
 ---
 
-**Made with 🎃 by the grlog team**(grlog.DEBUG),
-    grlog.WithSink(
-        grlog.NewStdoutSink(grlog.PlainFormat()),
-    ),
-    grlog.WithCaller(true),
-)
-defer logger.Close()
-```
+## 🛠️ Maintainers
 
-**Best for:**
-- Local development
-- Debugging
-- Testing
+| Role                | Contributors                          |
+|---------------------|---------------------------------------|
+| Core Development    | [@gourdian25](https://github.com/gourdian25) |
+| Performance Tuning  | [@lordofthemind](https://github.com/lordofthemind) |
 
 ---
 
-### 3. Production Configuration (Single File)
+## 🌟 Acknowledgments
 
-```go
-// Production file logging with rotation
-fileSink, err := grlog.NewFileSink(grlog.FileSinkConfig{
-    Filename:    "production",
-    Dir:         "/var/log/myapp",
-    MaxBytes:    100 * 1024 * 1024,  // 100MB
-    BackupCount: 20,
-    Formatter:   grlog.JSONFormat(),
-})
-if err != nil {
-    log.Fatal(err)
-}
+grlog is built by Go developers for the Go community. Special thanks to:
 
-logger := grlog.NewLogger(
-    grlog.WithLevel(grlog.INFO),
-    grlog.WithSink(fileSink),
-    grlog.WithAsync(10000),
-    grlog.WithCaller(false),  // Better performance
-    grlog.WithContextFields(
-        grlog.String("service", "user-api"),
-        grlog.String("version", "1.0.0"),
-        grlog.String("environment", "production"),
-    ),
-)
-defer logger.Close()
-```
+- All our contributors 👥
+- The amazing Go open-source ecosystem 🦾
+- Early adopters who provided valuable feedback 💡
+- The logging libraries that inspired us (zap, logrus, zerolog)
 
-**Best for:**
-- Production servers
-- VMs and bare metal
-- Audit requirements
+We believe logging should be:
+- ✅ **Elegant** - Clean API that's joy to use
+- ✅ **Efficient** - Zero-allocation performance
+- ✅ **Production-safe** - Battle-tested concurrency
+- ✅ **Developer-friendly** - Comprehensive docs and examples
+
+Join us in making grlog even better! 🚀
 
 ---
 
-### 4. Cloud-Native Configuration (Stdout JSON)
-
-```go
-// Kubernetes/Docker optimized
-logger := grlog.NewLogger(
-    grlog.WithLevel(grlog.INFO),
-    grlog.WithSink(
-        grlog.NewStdoutSink(grlog.JSONFormat()),
-    ),
-    grlog.WithAsync(5000),
-    grlog.WithCaller(false),
-    grlog.WithContextFields(
-        grlog.String("service", os.Getenv("SERVICE_NAME")),
-        grlog.String("pod", os.Getenv("POD_NAME")),
-        grlog.String("namespace", os.Getenv("NAMESPACE")),
-    ),
-)
-defer logger.Close()
-```
-
-**Best for:**
-- Docker containers
-- Kubernetes pods
-- Cloud platforms (AWS, GCP, Azure)
-
----
-
-### 5. High-Performance Configuration
-
-```go
-// Optimized for maximum throughput
-logger := grlog.NewLogger(
-    grlog.WithLevel(grlog.WARN),  // Minimal logging
-    grlog.WithSink(
-        grlog.NewStdoutSink(grlog.PlainFormat()),
-    ),
-    grlog.WithAsync(50000),  // Large buffer
-    grlog.WithCaller(false), // No caller overhead
-)
-defer logger.Close()
-```
-
-**Best for:**
-- High-throughput services
-- Performance-critical paths
-- Latency-sensitive applications
-
----
-
-### 6. Multi-Destination Configuration
-
-```go
-// Console + File + Custom (comprehensive logging)
-stdoutSink := grlog.NewStdoutSink(grlog.PlainFormat())
-
-fileSink, _ := grlog.NewFileSink(grlog.FileSinkConfig{
-    Filename:  "audit",
-    Dir:       "/var/log/audit",
-    MaxBytes:  50 * 1024 * 1024,
-    Formatter: grlog.JSONFormat(),
-})
-
-metricsSink := grlog.NewCustomSink(func(entry grlog.LogEntry) error {
-    // Send metrics
-    if entry.Level >= grlog.ERROR {
-        metrics.IncrementErrorCount()
-    }
-    return nil
-})
-
-multiSink := grlog.NewMultiSink(stdoutSink, fileSink, metricsSink)
-
-logger := grlog.NewLogger(
-    grlog.WithLevel
+**Made with 🎃 by the grlog team**
