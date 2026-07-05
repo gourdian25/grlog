@@ -1,0 +1,9 @@
+# File: .github/dependabot.yml
+
+version: 2
+updates:
+  # Keep GitHub Actions up to date (the module itself has no dependencies)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

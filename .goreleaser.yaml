@@ -19,8 +19,9 @@ archives:
     files:
       - LICENSE
       - README.md
+      - CHANGELOG.md
+      # No go.sum: the module has zero dependencies
       - go.mod
-      - go.sum
       - "**/*.go"
 
 checksum:
@@ -39,10 +40,13 @@ release:
     Production-ready structured logging library for Go.
 
     ### Highlights
-    - Zero-allocation typed fields
-    - Async logging with overflow protection
-    - Multi-sink architecture
+    - Zero-allocation typed fields and formatting
+    - Async logging with configurable overflow policies
+    - log/slog interoperability
+    - File rotation with compression and age-based cleanup
     - Extensive benchmarks and race tests
+
+    See [CHANGELOG.md](https://github.com/gourdian25/grlog/blob/master/CHANGELOG.md) for full details.
 
 changelog:
   use: git
