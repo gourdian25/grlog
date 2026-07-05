@@ -37,7 +37,9 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
       - name: Verify go.mod is tidy
-        run: go mod tidy -diff
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
       - name: Run tests
         run: go test ./...
       - name: Run tests with race detector
