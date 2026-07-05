@@ -1,6 +1,7 @@
 # 🎃 grlog - Production-Ready Structured Logging for Go
 
 [![CI](https://github.com/gourdian25/grlog/actions/workflows/ci.yml/badge.svg)](https://github.com/gourdian25/grlog/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/gourdian25/grlog.svg)](https://pkg.go.dev/github.com/gourdian25/grlog)
 [![Go Version](https://img.shields.io/badge/go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -1896,9 +1897,9 @@ logger.Info("User action",
 
 ```go
 // For hot paths
-grlog.WithCaller(false)       // Saves ~1μs per log
-grlog.WithLevel(WARN)         // Aggressive filtering
-formatter := grlog.PlainFormat()  // 4x faster than JSON
+grlog.WithCaller(false)             // Saves ~500ns per log (runtime.Caller)
+grlog.WithLevel(grlog.WARN)         // Filtered-out calls cost ~2.7ns
+grlog.WithSampler(100, grlog.INFO)  // Keep 1-in-100 DEBUG/INFO entries
 ```
 
 ### 7. Error Handling
@@ -2090,17 +2091,18 @@ make coverage
 
 1. Fork the repository
 2. Create feature branch: `git checkout -b feat/amazing-feature`
-3. Write tests for your changes
-4. Ensure tests pass: `make test`
-5. Run benchmarks: `make bench`
-6. Submit pull request
+3. Write tests for your changes (concurrency-sensitive changes need coverage in `grlog_race_test.go`)
+4. Ensure everything passes: `make ci` and `make test-race`
+5. Run benchmarks: `make bench` — no performance regressions
+6. Update `CHANGELOG.md` under `[Unreleased]`
+7. Submit pull request (CI runs lint, tests, and the race detector)
 
 ### Code Standards
 
-- Follow Go conventions (`go fmt`, `golint`)
+- Follow Go conventions (`go fmt`, `make lint` / golangci-lint)
 - Add godoc comments for public APIs
 - Include examples in documentation
-- Maintain test coverage above 95%
+- Keep test coverage high (`make coverage-summary`)
 - No performance regressions
 
 ---
@@ -2121,7 +2123,8 @@ Copyright (c) 2024 grlog Contributors
 
 - 🐛 **Bug Reports**: [GitHub Issues](https://github.com/gourdian25/grlog/issues)
 - 💡 **Feature Requests**: [GitHub Issues](https://github.com/gourdian25/grlog/issues)
-- 📖 **Full API Documentation**: See [docs.go](docs.go)
+- 📖 **Full API Documentation**: [pkg.go.dev/github.com/gourdian25/grlog](https://pkg.go.dev/github.com/gourdian25/grlog) (or [docs.go](docs.go))
+- 📝 **Release History**: [CHANGELOG.md](CHANGELOG.md)
 - ⚡ **Performance Questions**: Include benchmark results
 - 🔒 **Security**: See [SECURITY.md](SECURITY.md)
 
