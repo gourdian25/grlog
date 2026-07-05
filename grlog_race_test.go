@@ -1,3 +1,5 @@
+// File: grlog_race_test.go
+
 package grlog
 
 

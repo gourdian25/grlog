@@ -1,3 +1,5 @@
+// File: grlog_bench_test.go
+
 package grlog
 
 import (
