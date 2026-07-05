@@ -1,39 +1,45 @@
 # 🎃 grlog - Production-Ready Structured Logging for Go
 
-[![Go Version](https://img.shields.io/badge/go-1.18+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![CI](https://github.com/gourdian25/grlog/actions/workflows/ci.yml/badge.svg)](https://github.com/gourdian25/grlog/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/badge/go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Coverage](https://img.shields.io/badge/coverage-96.8%25-brightgreen)](test_coverage/coverage.html)
-[![Go Report](https://img.shields.io/badge/go%20report-A+-brightgreen)](https://goreportcard.com/)
 
-A high-performance, zero-allocation structured logging library for Go with pluggable sinks, formatters, and advanced features like async logging, file rotation, and comprehensive race condition safety.
+A high-performance structured logging library for Go with pluggable sinks, formatters, and advanced features like async logging, file rotation, a `log/slog` adapter, and comprehensive race condition safety.
 
 ## 🌟 Why grlog?
 
 grlog is built for **production systems** that demand:
 
-- ⚡ **Blazing Fast**: Zero-allocation typed fields (~0.27ns/op), async logging reduces caller latency by 30%
-- 🛡️ **Production-Safe**: 96.8% test coverage, 30+ race detection tests, comprehensive concurrency safety
-- 🔧 **Modular Design**: Pluggable sinks (stdout, file, multi-sink, custom) and formatters (plain text, JSON)
-- 🚀 **Cloud-Native**: Perfect for containerized environments with structured JSON output
-- 📦 **Batteries Included**: File rotation, context-aware logging, caller info, and dynamic configuration
+- ⚡ **Blazing Fast**: Zero-allocation typed fields, zero-allocation formatting via pooled buffers, ~2.7ns filtered-out calls
+- 🛡️ **Production-Safe**: Extensive race detection tests, panic-free shutdown, no lost logs on Close
+- 🔧 **Modular Design**: Pluggable sinks (writer, file, multi, leveled, custom) and formatters (plain text, JSON)
+- 🚀 **Cloud-Native**: Deterministic JSON output, `log/slog` handler, typed context keys for request tracing
+- 📦 **Batteries Included**: File rotation with compression, sampling, overflow policies, caller info, dynamic configuration
 
 ### Performance Highlights
 
+Measured on Apple M-series (Go 1.26); run `make bench` for your hardware:
+
 ```
 Field Construction (zero allocation):
-- String field:        0.27 ns/op    0 B/op    0 allocs/op
-- Int field:           0.27 ns/op    0 B/op    0 allocs/op
-- Mixed 10 fields:     0.27 ns/op    0 B/op    0 allocs/op
+- String field:        0.22 ns/op    0 B/op    0 allocs/op
+- Int field:           0.23 ns/op    0 B/op    0 allocs/op
+- Mixed 10 fields:     0.22 ns/op    0 B/op    0 allocs/op
 
 Logging Performance:
-- Sync logging:        447 ns/op     344 B/op  3 allocs/op
-- Async logging:       477 ns/op     344 B/op  3 allocs/op
-- Level filtering:     8.5 ns/op     0 B/op    0 allocs/op
+- Sync log, no fields:  125 ns/op      0 B/op   0 allocs/op
+- Sync log, 3 fields:   177 ns/op    128 B/op   1 allocs/op
+- Async log, no fields: 159 ns/op      0 B/op   0 allocs/op
+- Level filtered out:   2.7 ns/op      0 B/op   0 allocs/op
+
+Formatting (pooled buffers):
+- Plain, 3 fields:      109 ns/op      0 B/op   0 allocs/op
+- JSON, 3 fields:       205 ns/op      4 B/op   1 allocs/op
 
 Real-World Scenarios:
-- HTTP request log:    4.3 μs/op     2405 B/op 34 allocs/op
-- Error log:           4.8 μs/op     2730 B/op 39 allocs/op
-- Business event:      5.9 μs/op     3945 B/op 44 allocs/op
+- HTTP request log:     563 ns/op    324 B/op   2 allocs/op
+- Error log:            1.2 μs/op    600 B/op   8 allocs/op
+- Business event:       945 ns/op    581 B/op   2 allocs/op
 ```
 
 ## 📚 Table of Contents
@@ -60,7 +66,7 @@ Real-World Scenarios:
 go get github.com/gourdian25/grlog
 ```
 
-**Requirements**: Go 1.18+
+**Requirements**: Go 1.21+ (needed for `log/slog` interoperability and `errors.Join`)
 
 ## 🚀 Quick Start
 
@@ -136,7 +142,7 @@ sink.Write(entry)
 
 ## 📶 Log Levels
 
-grlog provides 4 log levels with atomic level changes:
+grlog provides 5 log levels with atomic level changes, plus `OFF` to disable output:
 
 | Level | When to Use | Example |
 |-------|-------------|---------|
@@ -144,6 +150,8 @@ grlog provides 4 log levels with atomic level changes:
 | ℹ️ **INFO** | General operational messages | `logger.Info("Server started on :8080")` |
 | ⚠️ **WARN** | Warning conditions | `logger.Warn("High memory usage", Int("percent", 85))` |
 | ❌ **ERROR** | Error conditions | `logger.Error("Database error", Err(err))` |
+| 💀 **FATAL** | Unrecoverable errors | `logger.Fatal("Cannot bind port", Err(err))` — flushes, closes, then `os.Exit(1)` |
+| 🔇 **OFF** | Disable all logging | `logger.SetLevel(grlog.OFF)` |
 
 ### Dynamic Level Control
 
@@ -154,7 +162,7 @@ logger.SetLevel(grlog.WARN)
 // Get current level
 level := logger.GetLevel()
 
-// Parse from string
+// Parse from string ("debug", "info", "warn", "error", "fatal", "off")
 level, err := grlog.ParseLogLevel("info")
 ```
 
@@ -166,17 +174,20 @@ level, err := grlog.ParseLogLevel("info")
 // String fields
 grlog.String("key", "value")
 
-// Integer fields
+// Numeric fields
 grlog.Int("count", 42)
 grlog.Int64("size", 1234567890)
+grlog.Uint64("offset", 987654321)
+grlog.Float64("ratio", 0.75)
 
 // Boolean fields
 grlog.Bool("success", true)
 
-// Duration fields
+// Time fields
 grlog.Duration("latency", 45*time.Millisecond)
+grlog.Time("expires_at", expiry) // RFC3339Nano
 
-// Error fields (with nil safety)
+// Error fields (nil-safe: Err(nil) is skipped entirely in output)
 grlog.Err(err)  // Automatically uses "error" as key
 
 // Any type (fallback, uses reflection)
@@ -250,9 +261,11 @@ logger := grlog.NewLogger(
 // Stdout sink with custom formatter
 customFormatter := &grlog.PlainFormatter{
     TimestampFormat: "2006-01-02 15:04:05.000",
-    EnableCaller:    false,
 }
 stdoutSink := grlog.NewStdoutSink(customFormatter)
+
+// Or write to any io.Writer (stderr, buffers in tests, sockets, ...)
+stderrSink := grlog.NewWriterSink(os.Stderr, customFormatter)
 ```
 
 **Use Cases:**
@@ -288,17 +301,24 @@ logger := grlog.NewLogger(
 ```
 
 ```go
-// Production file sink with JSON
+// Production file sink with JSON, compression, and age-based cleanup
 config := grlog.FileSinkConfig{
     Filename:    "production",
     Dir:         "/var/log/myapp",
     MaxBytes:    100 * 1024 * 1024,        // 100MB files
     BackupCount: 20,                       // Keep 20 backups
+    MaxAge:      30 * 24 * time.Hour,      // Also remove backups older than 30 days
+    Compress:    true,                     // Gzip rotated backups in the background
     Formatter:   grlog.JSONFormat(),
 }
 
 fileSink, err := grlog.NewFileSink(config)
 ```
+
+Rotation is crash-safe: backup names are collision-proof (nanosecond
+timestamps plus a sequence suffix), and if a rotation fails the sink reopens
+the current file and keeps writing — log entries are never dropped because of
+a rotation error.
 
 ```go
 // High-volume application configuration
@@ -708,6 +728,38 @@ simpleSink := grlog.NewCustomSink(func(entry grlog.LogEntry) error {
 
 ---
 
+### 5. LeveledSink - Per-Destination Severity Routing
+
+Wraps any sink and drops entries below a minimum level. This is how you send
+everything to stdout but only errors to a file (or an alerting sink):
+
+```go
+stdoutSink := grlog.NewStdoutSink(grlog.PlainFormat())
+errorFile, _ := grlog.NewFileSink(grlog.FileSinkConfig{Filename: "errors"})
+
+logger := grlog.NewLogger(
+    grlog.WithSink(grlog.NewMultiSink(
+        stdoutSink,                              // receives everything
+        grlog.NewLeveledSink(errorFile, grlog.ERROR), // ERROR and FATAL only
+    )),
+)
+```
+
+---
+
+### 6. WriterSink - Any io.Writer
+
+```go
+// stderr, network connections, in-memory buffers in tests...
+sink := grlog.NewWriterSink(os.Stderr, grlog.JSONFormat())
+
+// Perfect for asserting on log output in tests:
+var buf bytes.Buffer
+testLogger := grlog.NewLogger(grlog.WithSink(grlog.NewWriterSink(&buf, grlog.PlainFormat())))
+```
+
+---
+
 ## 🎨 All Available Formatters
 
 ### 1. PlainFormatter - Human-Readable Text
@@ -720,18 +772,12 @@ formatter := grlog.PlainFormat()
 ```go
 // Custom plain formatter
 formatter := &grlog.PlainFormatter{
-    TimestampFormat: "2006-01-02 15:04:05.000",
-    EnableCaller:    true,
+    TimestampFormat: "15:04:05", // Time only
 }
 ```
 
-```go
-// Plain formatter without caller info
-formatter := &grlog.PlainFormatter{
-    TimestampFormat: "15:04:05",  // Time only
-    EnableCaller:    false,
-}
-```
+Caller info is controlled on the logger via `grlog.WithCaller(false)`;
+formatters render it whenever the entry carries it.
 
 **Output Format:**
 ```
@@ -757,7 +803,6 @@ formatter := grlog.JSONFormat()
 // JSON formatter with custom timestamp
 formatter := &grlog.JSONFormatter{
     TimestampFormat: time.RFC3339Nano,
-    EnableCaller:    true,
     PrettyPrint:     false,
 }
 ```
@@ -766,7 +811,6 @@ formatter := &grlog.JSONFormatter{
 // Pretty-printed JSON (for debugging)
 formatter := &grlog.JSONFormatter{
     TimestampFormat: time.RFC3339,
-    EnableCaller:    true,
     PrettyPrint:     true,
 }
 ```
@@ -775,7 +819,6 @@ formatter := &grlog.JSONFormatter{
 // JSON with custom fields (added to every log)
 formatter := &grlog.JSONFormatter{
     TimestampFormat: time.RFC3339Nano,
-    EnableCaller:    true,
     CustomFields: map[string]interface{}{
         "service":     "user-api",
         "version":     "1.0.0",
@@ -992,9 +1035,9 @@ defer baseLogger.Close()
 
 // In request handler
 func HandleRequest(w http.ResponseWriter, r *http.Request) {
-    ctx := context.WithValue(r.Context(), "request_id", generateRequestID())
-    ctx = context.WithValue(ctx, "user_id", getUserID(r))
-    
+    ctx := grlog.ContextWithRequestID(r.Context(), generateRequestID())
+    ctx = grlog.ContextWithUserID(ctx, getUserID(r))
+
     requestLogger := baseLogger.WithContext(ctx)
     requestLogger.Info("Request started")
     // Automatically includes request_id and user_id
@@ -1165,7 +1208,6 @@ fileSink, err := grlog.NewFileSink(grlog.FileSinkConfig{
     BackupCount: 30,
     Formatter: &grlog.JSONFormatter{
         TimestampFormat: time.RFC3339Nano,
-        EnableCaller:    false,
         CustomFields: map[string]interface{}{
             "service":     "user-api",
             "version":     version,
@@ -1239,22 +1281,27 @@ logger.Info("This is non-blocking")
 ```
 
 **Key Points:**
-- ✅ Reduces caller latency by ~30%
-- ✅ Buffer overflow triggers synchronous fallback
-- ✅ Always call `Close()` to drain queue
+- ✅ Buffer overflow behavior is configurable via `WithOverflowPolicy`:
+  `OverflowSyncFallback` (default, never loses entries), `OverflowBlock`
+  (strict ordering), or `OverflowDrop` (never blocks; drops are counted in
+  `logger.Stats().DroppedEntries`)
+- ✅ `Close()` drains the queue — no buffered entries are lost
 
 ---
 
 ### Context-Aware Logging
 
+Context values are stored under private typed keys via helper functions, so
+they can never collide with other packages' context values:
+
 ```go
 // Base logger
 baseLogger := grlog.NewDefaultLogger()
 
-// Extract context values
-ctx := context.WithValue(context.Background(), "request_id", "req-123")
-ctx = context.WithValue(ctx, "trace_id", "trace-456")
-ctx = context.WithValue(ctx, "user_id", "user-789")
+// Store request metadata with the typed helpers
+ctx := grlog.ContextWithRequestID(context.Background(), "req-123")
+ctx = grlog.ContextWithTraceID(ctx, "trace-456")
+ctx = grlog.ContextWithUserID(ctx, "user-789")
 
 // Create context logger
 requestLogger := baseLogger.WithContext(ctx)
@@ -1264,10 +1311,25 @@ requestLogger.Info("Processing request")
 // Output includes: request_id=req-123, trace_id=trace-456, user_id=user-789
 ```
 
-**Supported Context Keys:**
-- `"request_id"` (string)
-- `"trace_id"` (string)
-- `"user_id"` (string)
+**Built-in Context Helpers:**
+- `grlog.ContextWithRequestID` → `request_id`
+- `grlog.ContextWithTraceID` → `trace_id`
+- `grlog.ContextWithUserID` → `user_id`
+
+**Custom extraction** (e.g. OpenTelemetry span IDs):
+
+```go
+logger := grlog.NewLogger(
+    grlog.WithContextExtractor(func(ctx context.Context) []grlog.Field {
+        if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+            return []grlog.Field{
+                grlog.String("otel_trace_id", span.SpanContext().TraceID().String()),
+            }
+        }
+        return nil
+    }),
+)
+```
 
 ---
 
@@ -1284,6 +1346,92 @@ logger.AddSink(newSink)
 
 // Remove sink at runtime
 logger.RemoveSink(oldSink)
+```
+
+---
+
+### Derived Loggers with With()
+
+`With` returns a lightweight view that adds permanent fields; views share
+sinks and the async machinery, and closing any view closes the logger exactly
+once:
+
+```go
+logger := grlog.NewDefaultLogger()
+defer logger.Close()
+
+dbLog := logger.With(grlog.String("component", "database"))
+cacheLog := logger.With(grlog.String("component", "cache"))
+
+dbLog.Info("query executed", grlog.Duration("took", 3*time.Millisecond))
+// ... component=database is on every entry
+```
+
+---
+
+### log/slog Interoperability
+
+grlog can act as the backend for the standard library's `log/slog`, so
+third-party code that logs via slog flows through your grlog sinks:
+
+```go
+logger := grlog.NewLogger(
+    grlog.WithSink(grlog.NewStdoutSink(grlog.JSONFormat())),
+)
+defer logger.Close()
+
+slog.SetDefault(slog.New(grlog.NewSlogHandler(logger)))
+
+slog.Info("from slog", "status", 200) // rendered by grlog's JSON formatter
+```
+
+Groups become dotted keys (`req.status`), `slog.Logger.With` attributes are
+preserved, and levels map Debug→DEBUG, Info→INFO, Warn→WARN, Error→ERROR.
+
+---
+
+### Sampling High-Volume Logs
+
+Keep 1 in N entries for noisy low-severity levels; higher levels are never
+sampled:
+
+```go
+logger := grlog.NewLogger(
+    grlog.WithSampler(100, grlog.INFO), // keep 1 in 100 DEBUG/INFO entries
+)
+
+// Observability:
+skipped := logger.Stats().SampledEntries
+```
+
+---
+
+### Sink Failure Handling
+
+By default, sink write failures are reported to stderr (rate-limited so a
+dead sink cannot flood it). For production, route them to your metrics:
+
+```go
+logger := grlog.NewLogger(
+    grlog.WithSink(remoteSink),
+    grlog.WithErrorHandler(func(err error) {
+        sinkErrorCounter.Inc() // do NOT log through the same logger here
+    }),
+)
+```
+
+---
+
+### Caller Info in Wrappers
+
+If you wrap grlog in your own helper package, add caller skip so log lines
+point at your application code instead of the wrapper:
+
+```go
+logger := grlog.NewLogger(
+    grlog.WithCaller(true),
+    grlog.WithCallerSkip(1), // one extra frame for your wrapper function
+)
 ```
 
 ---
@@ -1383,7 +1531,7 @@ func loggingMiddleware(logger *grlog.Logger) func(http.Handler) http.Handler {
             
             // Generate request ID
             requestID := generateRequestID()
-            ctx := context.WithValue(r.Context(), "request_id", requestID)
+            ctx := grlog.ContextWithRequestID(r.Context(), requestID)
             
             // Create request-scoped logger
             reqLogger := logger.WithContext(ctx)
@@ -1825,39 +1973,40 @@ logger.Info("Authentication",
 
 ## 📊 Performance & Benchmarks
 
-### Benchmark Results (Intel i5-9300H @ 2.40GHz)
+### Benchmark Results (Apple M-series, Go 1.26)
 
 ```
 Field Construction (zero allocation):
-BenchmarkFields_String-8              0.27 ns/op      0 B/op    0 allocs/op
-BenchmarkFields_Int-8                 0.27 ns/op      0 B/op    0 allocs/op
-BenchmarkFields_Mixed10-8             0.27 ns/op      0 B/op    0 allocs/op
+BenchmarkFields_String-10             0.22 ns/op      0 B/op    0 allocs/op
+BenchmarkFields_Int-10                0.23 ns/op      0 B/op    0 allocs/op
+BenchmarkFields_Mixed10Fields-10      0.22 ns/op      0 B/op    0 allocs/op
 
-Formatting:
-BenchmarkFormatter_Plain_NoFields-8   344 ns/op     328 B/op    3 allocs/op
-BenchmarkFormatter_Plain_3Fields-8    635 ns/op     384 B/op    5 allocs/op
-BenchmarkFormatter_JSON_NoFields-8   1412 ns/op     832 B/op   15 allocs/op
-BenchmarkFormatter_JSON_3Fields-8    2211 ns/op    1136 B/op   21 allocs/op
+Formatting (pooled buffers):
+BenchmarkFormatter_Plain_NoFields-10   78 ns/op       0 B/op    0 allocs/op
+BenchmarkFormatter_Plain_3Fields-10   109 ns/op       0 B/op    0 allocs/op
+BenchmarkFormatter_JSON_NoFields-10    82 ns/op       0 B/op    0 allocs/op
+BenchmarkFormatter_JSON_3Fields-10    205 ns/op       4 B/op    1 allocs/op
 
 Logger Performance:
-BenchmarkLogger_Sync_NoFields-8       447 ns/op     344 B/op    3 allocs/op
-BenchmarkLogger_Async_NoFields-8      477 ns/op     344 B/op    3 allocs/op
-BenchmarkLogger_WithCaller-8         1607 ns/op     744 B/op    9 allocs/op
-BenchmarkLogger_FilteredOut-8         8.5 ns/op       0 B/op    0 allocs/op
+BenchmarkLogger_Sync_NoFields-10      125 ns/op       0 B/op    0 allocs/op
+BenchmarkLogger_Sync_3Fields-10       177 ns/op     128 B/op    1 allocs/op
+BenchmarkLogger_Async_NoFields-10     159 ns/op       0 B/op    0 allocs/op
+BenchmarkLogger_FilteredOut_Info-10   2.7 ns/op       0 B/op    0 allocs/op
 
 Real-World Scenarios:
-BenchmarkRealWorld_HTTPRequest-8     4290 ns/op    2405 B/op   34 allocs/op
-BenchmarkRealWorld_ErrorLog-8        4767 ns/op    2730 B/op   39 allocs/op
-BenchmarkRealWorld_BusinessEvent-8   5949 ns/op    3945 B/op   44 allocs/op
+BenchmarkRealWorld_HTTPRequestLog-10  563 ns/op     324 B/op    2 allocs/op
+BenchmarkRealWorld_ErrorLog-10        1.2 μs/op     600 B/op    8 allocs/op
+BenchmarkRealWorld_BusinessEvent-10   945 ns/op     581 B/op    2 allocs/op
 ```
 
 ### Key Takeaways
 
 - ⚡ **Typed fields**: Sub-nanosecond overhead, zero allocations
-- 📄 **Plain text**: 4x faster than JSON formatting
-- 🚀 **Async**: Minimal overhead (~30ns), reduces caller latency
-- 🔍 **Filtering**: Extremely cheap (8.5ns) for filtered-out logs
-- 📊 **Real-world**: HTTP request logging under 5 microseconds
+- 📄 **Formatting**: Zero allocations via pooled buffers on both plain and JSON paths
+- 🚀 **Logging**: Zero allocations for entries without fields; one for the field slice
+- 🔍 **Filtering**: Filtered-out logs cost ~2.7ns and never allocate
+- 📊 **Real-world**: HTTP request logging in ~0.6 microseconds
+- ⚠️ Caller info (`WithCaller(true)`) adds ~500ns per entry (`runtime.Caller`); disable it on hot paths
 
 ### Running Benchmarks
 
@@ -1881,9 +2030,9 @@ benchstat baseline.txt new.txt
 
 | Metric | Value | Details |
 |--------|-------|---------|
-| **Statement Coverage** | 96.8% | 130+ tests |
-| **Race Detection Tests** | 30+ | All concurrent scenarios |
-| **Integration Tests** | ✅ | File rotation, async handling |
+| **Statement Coverage** | ~88% | 150+ tests (`make coverage-summary` for current numbers) |
+| **Race Detection Tests** | 20+ | All concurrent scenarios, run in CI with `-race` |
+| **Regression Tests** | ✅ | Shutdown drain, rotation safety, JSON collisions, view close semantics |
 
 ### Running Tests
 
@@ -1898,7 +2047,7 @@ make coverage
 env CGO_ENABLED=1 go test -race -v ./...
 
 # Coverage report (HTML)
-make coverage-html
+make coverage
 open test_coverage/coverage.html
 ```
 

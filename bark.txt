@@ -1,4 +1,5 @@
 .
+├── CLAUDE.md
 ├── LICENSE
 ├── Makefile
 ├── README.md
@@ -7,6 +8,8 @@
 ├── grlog.go
 ├── grlog_bench_test.go
 ├── grlog_race_test.go
-└── grlog_test.go
+├── grlog_regression_test.go
+├── grlog_test.go
+└── slog.go
 
-0 directories, 9 files
+0 directories, 12 files

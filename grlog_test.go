@@ -2,7 +2,6 @@
 
 package grlog
 
-
 import (
 	"bytes"
 	"context"
@@ -86,7 +85,6 @@ func TestParseLogLevel_Invalid(t *testing.T) {
 		input string
 	}{
 		{"empty string", ""},
-		{"invalid level fatal", "fatal"},
 		{"invalid level trace", "trace"},
 		{"numeric string", "123"},
 		{"random string", "random"},
@@ -343,14 +341,14 @@ func TestPlainFormatter_CallerEnabled(t *testing.T) {
 }
 
 func TestPlainFormatter_CallerDisabled(t *testing.T) {
+	// Caller info is controlled by the Logger's WithCaller option; when the
+	// logger doesn't attach it, the formatter must not render it.
 	formatter := PlainFormat().(*PlainFormatter)
-	formatter.EnableCaller = false
 
 	entry := LogEntry{
-		Timestamp:  time.Now(),
-		Level:      INFO,
-		Message:    "test",
-		CallerInfo: "file.go:42:TestFunc",
+		Timestamp: time.Now(),
+		Level:     INFO,
+		Message:   "test",
 	}
 
 	output := string(formatter.Format(entry))
@@ -473,15 +471,19 @@ func TestJSONFormatter_MarshalFailureFallback(t *testing.T) {
 
 	output := string(formatter.Format(entry))
 
-	// Should contain error message
-	if !strings.Contains(output, "error") || !strings.Contains(output, "marshal failed") {
-		t.Errorf("Expected fallback error message, got: %s", output)
-	}
-
 	// Should still be valid JSON
 	var result map[string]interface{}
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Errorf("Fallback output should be valid JSON: %v", err)
+		t.Fatalf("Fallback output should be valid JSON: %v", err)
+	}
+
+	// The message must survive; the unserializable value degrades to its
+	// %v string form instead of discarding the whole entry.
+	if result["message"] != "test" {
+		t.Errorf("Expected message to be preserved, got: %s", output)
+	}
+	if _, ok := result["channel"].(string); !ok {
+		t.Errorf("Expected unserializable field to degrade to a string, got: %s", output)
 	}
 }
 
@@ -855,7 +857,7 @@ func TestNewLogger_DefaultSink(t *testing.T) {
 	logger := NewLogger()
 	defer func() { _ = logger.Close() }()
 
-	if len(logger.sinks) == 0 {
+	if len(logger.core.sinks) == 0 {
 		t.Errorf("Expected default sink to be added")
 	}
 }
@@ -873,14 +875,14 @@ func TestWithCaller(t *testing.T) {
 	logger := NewLogger(WithCaller(false))
 	defer func() { _ = logger.Close() }()
 
-	if logger.enableCaller {
+	if logger.core.enableCaller {
 		t.Errorf("Expected caller to be disabled")
 	}
 
 	logger2 := NewLogger(WithCaller(true))
 	defer func() { _ = logger2.Close() }()
 
-	if !logger2.enableCaller {
+	if !logger2.core.enableCaller {
 		t.Errorf("Expected caller to be enabled")
 	}
 }
@@ -1007,9 +1009,9 @@ func TestLogger_WithContext(t *testing.T) {
 	defer func() { _ = logger.Close() }()
 
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "request_id", "req-123")
-	ctx = context.WithValue(ctx, "trace_id", "trace-456")
-	ctx = context.WithValue(ctx, "user_id", "user-789")
+	ctx = ContextWithRequestID(ctx, "req-123")
+	ctx = ContextWithTraceID(ctx, "trace-456")
+	ctx = ContextWithUserID(ctx, "user-789")
 
 	contextLogger := logger.WithContext(ctx)
 	contextLogger.Info("test message")
@@ -1379,7 +1381,7 @@ func TestLogger_WithNilSink(t *testing.T) {
 	defer func() { _ = logger.Close() }()
 
 	// Should have default sink since nil was ignored
-	if len(logger.sinks) == 0 {
+	if len(logger.core.sinks) == 0 {
 		t.Errorf("Expected default sink when nil sink provided")
 	}
 }
@@ -1388,10 +1390,10 @@ func TestLogger_AddNilSink(t *testing.T) {
 	logger := NewLogger()
 	defer func() { _ = logger.Close() }()
 
-	initialCount := len(logger.sinks)
+	initialCount := len(logger.core.sinks)
 	logger.AddSink(nil)
 
-	if len(logger.sinks) != initialCount {
+	if len(logger.core.sinks) != initialCount {
 		t.Errorf("Expected nil sink to be ignored")
 	}
 }
@@ -1403,12 +1405,12 @@ func TestLogger_RemoveNonExistentSink(t *testing.T) {
 	logger := NewLogger(WithSink(sink1))
 	defer func() { _ = logger.Close() }()
 
-	initialCount := len(logger.sinks)
+	initialCount := len(logger.core.sinks)
 
 	// Try to remove a sink that was never added
 	logger.RemoveSink(sink2)
 
-	if len(logger.sinks) != initialCount {
+	if len(logger.core.sinks) != initialCount {
 		t.Errorf("Expected sink count to remain unchanged")
 	}
 }
@@ -1437,14 +1439,14 @@ func TestJSONFormatter_CallerEnabled(t *testing.T) {
 }
 
 func TestJSONFormatter_CallerDisabled(t *testing.T) {
+	// Caller info is controlled by the Logger's WithCaller option; when the
+	// logger doesn't attach it, no "caller" key is emitted.
 	formatter := JSONFormat().(*JSONFormatter)
-	formatter.EnableCaller = false
 
 	entry := LogEntry{
-		Timestamp:  time.Now(),
-		Level:      INFO,
-		Message:    "test",
-		CallerInfo: "file.go:42:TestFunc",
+		Timestamp: time.Now(),
+		Level:     INFO,
+		Message:   "test",
 	}
 
 	output := formatter.Format(entry)
@@ -1545,7 +1547,7 @@ func TestLogger_AsyncWithZeroBuffer(t *testing.T) {
 	logger := NewLogger(WithAsync(0))
 	defer func() { _ = logger.Close() }()
 
-	if logger.async {
+	if logger.core.async {
 		t.Errorf("Expected async to be disabled with 0 buffer size")
 	}
 }
@@ -1554,7 +1556,7 @@ func TestLogger_AsyncWithNegativeBuffer(t *testing.T) {
 	logger := NewLogger(WithAsync(-10))
 	defer func() { _ = logger.Close() }()
 
-	if logger.async {
+	if logger.core.async {
 		t.Errorf("Expected async to be disabled with negative buffer size")
 	}
 }
@@ -1796,33 +1798,35 @@ func TestJSONFormatter_WithAllFieldTypes(t *testing.T) {
 }
 
 func TestLogger_WithContextMultipleCalls(t *testing.T) {
-	logger := NewLogger()
+	// Views derived via WithContext share sinks but carry independent fields.
+	var buf bytes.Buffer
+	logger := NewLogger(WithSink(NewWriterSink(&buf, PlainFormat())), WithCaller(false))
 	defer func() { _ = logger.Close() }()
 
 	ctx1 := context.Background()
-	ctx1 = context.WithValue(ctx1, "request_id", "req-1")
+	ctx1 = ContextWithRequestID(ctx1, "req-1")
 
 	ctx2 := context.Background()
-	ctx2 = context.WithValue(ctx2, "request_id", "req-2")
+	ctx2 = ContextWithRequestID(ctx2, "req-2")
 
 	logger1 := logger.WithContext(ctx1)
 	logger2 := logger.WithContext(ctx2)
 
-	var buf1, buf2 bytes.Buffer
-	sink1 := &StdoutSink{formatter: PlainFormat(), writer: &buf1}
-	sink2 := &StdoutSink{formatter: PlainFormat(), writer: &buf2}
-
-	logger1.sinks = []LogSink{sink1}
-	logger2.sinks = []LogSink{sink2}
-
 	logger1.Info("test1")
 	logger2.Info("test2")
 
-	if !strings.Contains(buf1.String(), "request_id=req-1") {
-		t.Errorf("Expected req-1 in logger1 output: %s", buf1.String())
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("Expected 2 log lines, got %d: %s", len(lines), buf.String())
 	}
-	if !strings.Contains(buf2.String(), "request_id=req-2") {
-		t.Errorf("Expected req-2 in logger2 output: %s", buf2.String())
+	if !strings.Contains(lines[0], "test1") || !strings.Contains(lines[0], "request_id=req-1") {
+		t.Errorf("Expected req-1 on first line: %s", lines[0])
+	}
+	if !strings.Contains(lines[1], "test2") || !strings.Contains(lines[1], "request_id=req-2") {
+		t.Errorf("Expected req-2 on second line: %s", lines[1])
+	}
+	if strings.Contains(lines[0], "req-2") || strings.Contains(lines[1], "req-1") {
+		t.Errorf("Context fields leaked between views: %s", buf.String())
 	}
 }
 
@@ -1986,6 +1990,8 @@ func TestLogger_AsyncWorkerSelectBranches(t *testing.T) {
 	}
 }
 
+type testCtxKey string
+
 func TestLogger_WithContextNonStringValues(t *testing.T) {
 	var buf bytes.Buffer
 	sink := &StdoutSink{
@@ -1996,18 +2002,21 @@ func TestLogger_WithContextNonStringValues(t *testing.T) {
 	logger := NewLogger(WithSink(sink))
 	defer func() { _ = logger.Close() }()
 
-	// Context with non-string values (should be ignored)
+	// Values not stored via this package's typed helpers are ignored,
+	// even when their key names match the well-known field names.
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "request_id", 123) // int, not string
-	ctx = context.WithValue(ctx, "trace_id", true)  // bool, not string
+	ctx = context.WithValue(ctx, testCtxKey("request_id"), "req-999")
+	ctx = context.WithValue(ctx, testCtxKey("trace_id"), true)
 
 	contextLogger := logger.WithContext(ctx)
 	contextLogger.Info("test")
 
 	output := buf.String()
-	// Should not contain these non-string values
 	if !strings.Contains(output, "test") {
 		t.Errorf("Expected message in output")
+	}
+	if strings.Contains(output, "request_id=") || strings.Contains(output, "trace_id=") {
+		t.Errorf("Did not expect foreign context values in output: %s", output)
 	}
 }
 
@@ -2025,9 +2034,9 @@ func TestLogger_WithContextValidAndInvalid(t *testing.T) {
 	defer func() { _ = logger.Close() }()
 
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "request_id", "req-123") // valid
-	ctx = context.WithValue(ctx, "trace_id", 456)         // invalid type
-	ctx = context.WithValue(ctx, "user_id", "user-789")   // valid
+	ctx = ContextWithRequestID(ctx, "req-123")                // valid
+	ctx = context.WithValue(ctx, testCtxKey("trace_id"), 456) // foreign key, ignored
+	ctx = ContextWithUserID(ctx, "user-789")                  // valid
 
 	contextLogger := logger.WithContext(ctx)
 	contextLogger.Info("test")
@@ -2196,8 +2205,8 @@ func TestLogger_ClosedStateCheck(t *testing.T) {
 	}
 
 	// Verify closed state
-	if !logger.closed.Load() {
-		t.Errorf("Expected logger.closed to be true")
+	if !logger.core.closed.Load() {
+		t.Errorf("Expected logger.core.closed to be true")
 	}
 
 	// Try to log (should be no-op)
@@ -2636,7 +2645,7 @@ func TestLogger_LevelAtomicInt32(t *testing.T) {
 	defer func() { _ = logger.Close() }()
 
 	// Test that level is properly stored as int32
-	logger.level.Store(int32(WARN))
+	logger.core.level.Store(int32(WARN))
 
 	if logger.GetLevel() != WARN {
 		t.Errorf("Expected WARN level")
@@ -2758,10 +2767,10 @@ func TestNewLogger_WithMultipleOptions(t *testing.T) {
 	if logger.GetLevel() != WARN {
 		t.Errorf("Expected WARN level")
 	}
-	if logger.enableCaller {
+	if logger.core.enableCaller {
 		t.Errorf("Expected caller disabled")
 	}
-	if !logger.async {
+	if !logger.core.async {
 		t.Errorf("Expected async enabled")
 	}
 	if len(logger.contextFields) != 2 {
@@ -2970,7 +2979,7 @@ func BenchmarkLogger_WithContext(b *testing.B) {
 	defer func() { _ = logger.Close() }()
 
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "request_id", "req-123")
+	ctx = ContextWithRequestID(ctx, "req-123")
 	contextLogger := logger.WithContext(ctx)
 
 	b.ResetTimer()
@@ -3262,11 +3271,11 @@ func TestNewDefaultLogger(t *testing.T) {
 		t.Errorf("Expected default level to be INFO")
 	}
 
-	if !logger.enableCaller {
+	if !logger.core.enableCaller {
 		t.Errorf("Expected caller to be enabled by default")
 	}
 
-	if len(logger.sinks) == 0 {
+	if len(logger.core.sinks) == 0 {
 		t.Errorf("Expected default sink to be configured")
 	}
 }

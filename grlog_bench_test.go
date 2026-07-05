@@ -539,9 +539,9 @@ func BenchmarkLogger_WithContext_WithValues(b *testing.B) {
 	defer func() { _ = logger.Close() }()
 
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "request_id", "req-123")
-	ctx = context.WithValue(ctx, "trace_id", "trace-456")
-	ctx = context.WithValue(ctx, "user_id", "user-789")
+	ctx = ContextWithRequestID(ctx, "req-123")
+	ctx = ContextWithTraceID(ctx, "trace-456")
+	ctx = ContextWithUserID(ctx, "user-789")
 	contextLogger := logger.WithContext(ctx)
 
 	b.ReportAllocs()

@@ -2,7 +2,6 @@
 
 package grlog
 
-
 import (
 	"bytes"
 	"context"
@@ -528,8 +527,8 @@ func TestRace_WithContext(t *testing.T) {
 			defer wg.Done()
 
 			ctx := context.Background()
-			ctx = context.WithValue(ctx, "request_id", fmt.Sprintf("req-%d", id))
-			ctx = context.WithValue(ctx, "user_id", fmt.Sprintf("user-%d", id))
+			ctx = ContextWithRequestID(ctx, fmt.Sprintf("req-%d", id))
+			ctx = ContextWithUserID(ctx, fmt.Sprintf("user-%d", id))
 
 			contextLogger := logger.WithContext(ctx)
 
@@ -593,7 +592,7 @@ func TestRace_MultipleContextLoggers(t *testing.T) {
 
 			// Each goroutine creates its own context logger
 			ctx := context.Background()
-			ctx = context.WithValue(ctx, "request_id", fmt.Sprintf("req-%d", id))
+			ctx = ContextWithRequestID(ctx, fmt.Sprintf("req-%d", id))
 			ctxLogger := baseLogger.WithContext(ctx)
 
 			for j := 0; j < 50; j++ {
