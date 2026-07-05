@@ -1,0 +1,33 @@
+# File: .golangci.yml
+
+version: "2"
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - gosec
+    - misspell
+    - gocritic
+    - revive
+  settings:
+    revive:
+      rules:
+        # The package deliberately exports DEBUG/INFO/... without a doc
+        # comment per constant; the block is documented as a whole.
+        - name: exported
+          disabled: true
+  exclusions:
+    rules:
+      # 0644 log files / 0755 log directories are intentional: logs must be
+      # readable by operators and log shippers.
+      - path: grlog\.go
+        linters: [gosec]
+        text: "G30[1-7]"
+      # Test helpers legitimately build paths from test-controlled variables.
+      - path: _test\.go
+        linters: [gosec, errcheck, gocritic]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
