@@ -730,7 +730,7 @@ func TestGoModVersionConsistency(t *testing.T) {
 	if err != nil {
 		t.Skip("go.mod not readable")
 	}
-	if !strings.Contains(string(data), "go 1.21") {
-		t.Errorf("go.mod should declare go 1.21 (log/slog requirement), got:\n%s", data)
+	if !strings.Contains(string(data), "go 1.26.4") {
+		t.Errorf("go.mod should declare go 1.26.4 (ecosystem-wide aligned version, still satisfies log/slog's 1.21 floor), got:\n%s", data)
 	}
 }
