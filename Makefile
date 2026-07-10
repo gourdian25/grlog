@@ -17,6 +17,7 @@
 GO              := go
 GOLANGCI_LINT   := golangci-lint
 COVERAGE_DIR    := test_coverage
+COVERAGE_MIN    := 80
 
 # VERSION must be explicitly provided for release/tag
 VERSION ?=
@@ -105,6 +106,15 @@ coverage-summary: $(COVERAGE_DIR) ## Print coverage summary
 	$(GO) test -coverprofile=$(COVERAGE_DIR)/coverage.out ./...
 	$(GO) tool cover -func=$(COVERAGE_DIR)/coverage.out
 
+.PHONY: coverage-check
+coverage-check: $(COVERAGE_DIR) ## Fail if root package coverage drops below COVERAGE_MIN
+	@out=$$($(GO) test -cover . 2>&1); \
+	echo "$$out"; \
+	pct=$$(echo "$$out" | grep -o '[0-9.]*%' | tr -d '%'); \
+	if [ -z "$$pct" ]; then echo "❌ no coverage output"; exit 1; fi; \
+	awk -v p="$$pct" -v m="$(COVERAGE_MIN)" 'BEGIN { exit !(p >= m) }' \
+		|| { echo "❌ Coverage $$pct%% is below minimum $(COVERAGE_MIN)%%"; exit 1; }
+
 # ------------------------------------------------------------------------------
 # Cleanup
 # ------------------------------------------------------------------------------
@@ -138,3 +148,8 @@ tag: guard-version ## Create and push git tag
 .PHONY: release
 release: guard-version tag ## Create release using GoReleaser
 	goreleaser release --clean
+
+.PHONY: goreleaser-check
+goreleaser-check: ## Dry run: validate config + snapshot release (no tag/push)
+	goreleaser check
+	goreleaser release --snapshot --clean

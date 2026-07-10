@@ -2,10 +2,29 @@
 
 [![CI](https://github.com/gourdian25/grlog/actions/workflows/ci.yml/badge.svg)](https://github.com/gourdian25/grlog/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/gourdian25/grlog.svg)](https://pkg.go.dev/github.com/gourdian25/grlog)
-[![Go Version](https://img.shields.io/badge/go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/go-1.26.4+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A high-performance structured logging library for Go with pluggable sinks, formatters, and advanced features like async logging, file rotation, a `log/slog` adapter, and comprehensive race condition safety.
+
+## 🌐 Part of the gourdian25 ecosystem
+
+grlog is one of several small, independent Go libraries meant to be used
+together — it's the recommended logging choice satisfied structurally (no
+adapter code) by every other repo's optional `Logger` interface:
+
+- [gourdiantoken](https://github.com/gourdian25/gourdiantoken) — JWT
+  access/refresh token issuance, verification, revocation, and rotation.
+- [grcache](https://github.com/gourdian25/grcache) — backend-agnostic
+  caching abstraction (Redis, Postgres, Mongo, memcached, in-memory).
+- [grevents](https://github.com/gourdian25/grevents) — an in-process event
+  bus for decoupling producers of state changes from consumers that react
+  to them.
+- [graudit](https://github.com/gourdian25/graudit) — an append-only,
+  tamper-evident audit log with pluggable storage backends.
+- [grpolicy](https://github.com/gourdian25/grpolicy) — attribute-based
+  policy evaluation (RBAC/ABAC), independent of any notion of "user" or
+  "role".
 
 ## 🌟 Why grlog?
 
@@ -67,7 +86,7 @@ Real-World Scenarios:
 go get github.com/gourdian25/grlog
 ```
 
-**Requirements**: Go 1.21+ (needed for `log/slog` interoperability and `errors.Join`)
+**Requirements**: Go 1.26.4+ (ecosystem-aligned minimum; `log/slog` interoperability and `errors.Join` only actually need 1.21+)
 
 ## 🚀 Quick Start
 

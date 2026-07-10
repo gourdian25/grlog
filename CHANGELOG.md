@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-10
+
+Ecosystem-alignment pass ahead of `grauth`: no functional/API changes.
+
+### Changed
+
+- `go.mod`'s `go` directive raised from `1.21` to `1.26.4`, aligning with
+  the rest of the gourdian25 ecosystem (still satisfies the `log/slog`
+  1.21 floor). `TestGoModVersionConsistency` updated to match.
+- README: added a "part of the gourdian25 ecosystem" section (previously
+  had none) and corrected the Go version badge/requirement from `1.21+`
+  to `1.26.4+`.
+
+### Added
+
+- Makefile: `coverage-check` (80% threshold, matching sibling repos),
+  `goreleaser-check`, and a `COVERAGE_MIN` variable — grlog was the only
+  repo in the ecosystem missing these targets.
+
 ## [0.1.0] - 2026-07-05
 
 Production-readiness overhaul: correctness fixes for shutdown and rotation,
@@ -109,6 +128,7 @@ zero-allocation formatting, `log/slog` interoperability, and CI. Contains
   multi/custom sinks, plain-text and JSON formatters, async logging, and
   size-based file rotation
 
-[Unreleased]: https://github.com/gourdian25/grlog/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/gourdian25/grlog/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/gourdian25/grlog/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/gourdian25/grlog/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/gourdian25/grlog/releases/tag/v0.0.1
