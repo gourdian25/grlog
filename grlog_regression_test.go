@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -732,5 +733,394 @@ func TestGoModVersionConsistency(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "go 1.26.4") {
 		t.Errorf("go.mod should declare go 1.26.4 (ecosystem-wide aligned version, still satisfies log/slog's 1.21 floor), got:\n%s", data)
+	}
+}
+
+// ==========================
+// Section 10: Coverage completion (slog adapter, dispatch, error rate-limiting)
+// ==========================
+
+func TestLevelFromSlog_AllBranches(t *testing.T) {
+	cases := []struct {
+		in   slog.Level
+		want LogLevel
+	}{
+		{slog.LevelDebug, DEBUG},
+		{slog.LevelInfo, INFO},
+		{slog.LevelWarn, WARN},
+		{slog.LevelError, ERROR},
+	}
+	for _, c := range cases {
+		if got := levelFromSlog(c.in); got != c.want {
+			t.Errorf("levelFromSlog(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestSlogHandler_Handle_FilteredBelowLevel(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(WithSink(NewWriterSink(&buf, JSONFormat())), WithLevel(ERROR), WithCaller(false))
+	defer func() { _ = logger.Close() }()
+
+	h := NewSlogHandler(logger)
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "below-threshold", 0)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected below-threshold record to be filtered, got: %s", buf.String())
+	}
+}
+
+func TestSlogHandler_Handle_ClosedLoggerDropsRecord(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(WithSink(NewWriterSink(&buf, JSONFormat())), WithCaller(false))
+	_ = logger.Close()
+
+	h := NewSlogHandler(logger)
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "after-close", 0)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output once the logger is closed, got: %s", buf.String())
+	}
+}
+
+func TestSlogHandler_Handle_SampledOutRecord(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(WithSink(NewWriterSink(&buf, JSONFormat())), WithSampler(2, INFO), WithCaller(false))
+	defer func() { _ = logger.Close() }()
+
+	h := NewSlogHandler(logger)
+	_ = h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "first", 0))
+	buf.Reset()
+	_ = h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "second", 0))
+
+	if buf.Len() != 0 {
+		t.Errorf("expected the second entry to be sampled out, got: %s", buf.String())
+	}
+}
+
+func TestSlogHandler_Handle_ZeroTimestampFallsBackToNow(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(WithSink(NewWriterSink(&buf, JSONFormat())), WithCaller(false))
+	defer func() { _ = logger.Close() }()
+
+	h := NewSlogHandler(logger)
+	r := slog.NewRecord(time.Time{}, slog.LevelInfo, "zero-ts", 0)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	if ts, _ := result["timestamp"].(string); ts == "" {
+		t.Errorf("expected a non-zero fallback timestamp, got %q", ts)
+	}
+}
+
+func TestSlogHandler_CallerInfoPopulated(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(WithSink(NewWriterSink(&buf, JSONFormat())), WithCaller(true))
+	defer func() { _ = logger.Close() }()
+
+	slog.New(NewSlogHandler(logger)).Info("hello")
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	if caller, _ := result["caller"].(string); caller == "" {
+		t.Errorf("expected caller info in output: %s", buf.String())
+	}
+}
+
+func TestSlogHandler_WithAttrs_EmptyReturnsSameHandler(t *testing.T) {
+	logger := NewLogger(WithSink(NewWriterSink(io.Discard, JSONFormat())))
+	defer func() { _ = logger.Close() }()
+
+	h := NewSlogHandler(logger)
+	if got := h.WithAttrs(nil); got != h {
+		t.Errorf("WithAttrs(nil) should return the same handler unchanged")
+	}
+}
+
+func TestSlogHandler_WithGroup_EmptyReturnsSameHandler(t *testing.T) {
+	logger := NewLogger(WithSink(NewWriterSink(io.Discard, JSONFormat())))
+	defer func() { _ = logger.Close() }()
+
+	h := NewSlogHandler(logger)
+	if got := h.WithGroup(""); got != h {
+		t.Errorf("WithGroup(\"\") should return the same handler unchanged")
+	}
+}
+
+func TestAppendSlogAttr_EmptyAttrSkipped(t *testing.T) {
+	got := appendSlogAttr([]Field{String("existing", "x")}, "", slog.Attr{})
+	if len(got) != 1 {
+		t.Errorf("expected the zero-value attr to be skipped, got %d fields: %+v", len(got), got)
+	}
+}
+
+func TestAppendSlogAttr_RemainingKinds(t *testing.T) {
+	ts := time.Date(2024, 6, 1, 10, 0, 0, 0, time.UTC)
+	attrs := []slog.Attr{
+		slog.Uint64("u", 42),
+		slog.Float64("f", 1.5),
+		slog.Bool("b", true),
+		slog.Time("t", ts),
+		slog.Any("a", []int{1, 2, 3}),
+	}
+
+	var got []Field
+	for _, a := range attrs {
+		got = appendSlogAttr(got, "", a)
+	}
+	if len(got) != len(attrs) {
+		t.Fatalf("expected %d fields, got %d: %+v", len(attrs), len(got), got)
+	}
+
+	wantTypes := []FieldType{Uint64Type, Float64Type, BoolType, TimeType, AnyType}
+	for i, f := range got {
+		if f.Type != wantTypes[i] {
+			t.Errorf("field %d: got type %v, want %v", i, f.Type, wantTypes[i])
+		}
+	}
+}
+
+func TestAppendSlogAttr_NestedGroupWithKey(t *testing.T) {
+	group := slog.Group("http", slog.Int("status", 200), slog.String("method", "GET"))
+	got := appendSlogAttr(nil, "", group)
+
+	if len(got) != 2 || got[0].Key != "http.status" || got[1].Key != "http.method" {
+		t.Errorf("expected http.status and http.method keys, got: %+v", got)
+	}
+}
+
+func TestAppendSlogAttr_GroupWithEmptyKeyKeepsPrefix(t *testing.T) {
+	// An anonymous group (empty Key) inlines its members under the current
+	// prefix instead of adding another path segment.
+	anon := slog.Attr{Key: "", Value: slog.GroupValue(slog.String("a", "b"))}
+	got := appendSlogAttr(nil, "outer.", anon)
+
+	if len(got) != 1 || got[0].Key != "outer.a" {
+		t.Errorf("expected outer.a, got: %+v", got)
+	}
+}
+
+func TestCallerFromPC_ZeroPC(t *testing.T) {
+	if got := callerFromPC(0); got != "" {
+		t.Errorf("callerFromPC(0) = %q, want empty", got)
+	}
+}
+
+func TestCallerFromPC_InvalidPC(t *testing.T) {
+	// A PC that doesn't correspond to any known frame resolves to an empty
+	// Frame (File == ""), matching the pc == 0 short-circuit's behavior.
+	if got := callerFromPC(1); got != "" {
+		t.Errorf("callerFromPC(1) = %q, want empty", got)
+	}
+}
+
+func TestCallerFromPC_ValidPC(t *testing.T) {
+	pc, _, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	got := callerFromPC(pc)
+	if got == "" {
+		t.Fatal("expected non-empty caller info")
+	}
+	if !strings.Contains(got, "TestCallerFromPC_ValidPC") {
+		t.Errorf("expected function name in caller info, got %q", got)
+	}
+}
+
+func TestFileSink_CleanupOldBackups_AgeBased(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	oldFile := filepath.Join(tmpDir, "test_20200101_000000.1.log")
+	newFile := filepath.Join(tmpDir, "test_20260101_000000.1.log")
+	if err := os.WriteFile(oldFile, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newFile, []byte("new"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(oldFile, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &FileSink{
+		baseDir:     tmpDir,
+		baseFile:    "test",
+		maxAge:      24 * time.Hour,
+		backupCount: 10,
+	}
+	s.cleanupOldBackups()
+
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Errorf("expected the aged-out backup to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(newFile); err != nil {
+		t.Errorf("expected the recent backup to survive, got err = %v", err)
+	}
+}
+
+func TestDispatch_OverflowBlock_SendSucceeds(t *testing.T) {
+	c := &loggerCore{
+		async:     true,
+		overflow:  OverflowBlock,
+		queue:     make(chan LogEntry, 1),
+		closeChan: make(chan struct{}),
+	}
+	c.dispatch(LogEntry{Message: "queued"})
+
+	select {
+	case entry := <-c.queue:
+		if entry.Message != "queued" {
+			t.Errorf("wrong entry dequeued: %+v", entry)
+		}
+	default:
+		t.Fatal("expected the entry to be enqueued under OverflowBlock")
+	}
+}
+
+func TestDispatch_OverflowBlock_ShutdownWritesDirectly(t *testing.T) {
+	var written int
+	sink := NewCustomSink(func(entry LogEntry) error {
+		written++
+		return nil
+	})
+
+	// An unbuffered, unread queue is always "full", so the only path the
+	// select can take is the already-closed closeChan branch.
+	c := &loggerCore{
+		sinks:     []LogSink{sink},
+		async:     true,
+		overflow:  OverflowBlock,
+		queue:     make(chan LogEntry),
+		closeChan: make(chan struct{}),
+	}
+	close(c.closeChan)
+
+	c.dispatch(LogEntry{Message: "shutdown-path"})
+
+	if written != 1 {
+		t.Errorf("expected the entry to be written directly during shutdown, got %d writes", written)
+	}
+}
+
+func TestHandleError_RateLimitsAndReportsSuppressedCount(t *testing.T) {
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	c := &loggerCore{}
+	failure := errors.New("boom")
+
+	c.handleError(failure) // reported immediately
+	c.handleError(failure) // suppressed (same msg, within the 1s window)
+	c.handleError(failure) // suppressed (same msg, within the 1s window)
+
+	// Force the rate-limit window to have elapsed without sleeping.
+	c.errMu.Lock()
+	c.lastErrTime = time.Now().Add(-2 * time.Second)
+	c.errMu.Unlock()
+
+	c.handleError(failure) // window elapsed: reports the suppressed count
+
+	_ = w.Close()
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	output := buf.String()
+
+	if strings.Count(output, "boom") != 2 {
+		t.Errorf("expected exactly 2 reported lines (first + after window), got: %s", output)
+	}
+	if !strings.Contains(output, "2 similar errors suppressed") {
+		t.Errorf("expected a suppressed-count message, got: %s", output)
+	}
+}
+
+func TestLogger_With_NoFieldsReturnsSameView(t *testing.T) {
+	logger := NewLogger()
+	defer func() { _ = logger.Close() }()
+
+	if got := logger.With(); got != logger {
+		t.Errorf("With() with no fields should return the same logger view")
+	}
+}
+
+func TestLogger_WithContext_NilContextReturnsSameView(t *testing.T) {
+	logger := NewLogger()
+	defer func() { _ = logger.Close() }()
+
+	if got := logger.WithContext(nil); got != logger { //nolint:staticcheck // deliberately exercising the nil-context guard
+		t.Errorf("WithContext(nil) should return the same logger view")
+	}
+}
+
+func TestLogger_Close_SinkCloseErrorPropagates(t *testing.T) {
+	logger := NewLogger(WithSink(&failingSink{closeErr: errors.New("close boom")}))
+
+	err := logger.Close()
+	if err == nil || !strings.Contains(err.Error(), "close boom") {
+		t.Errorf("expected Close() to surface the sink's close error, got %v", err)
+	}
+}
+
+func TestNewWriterSink_NilWriterDefaultsToStdout(t *testing.T) {
+	sink := NewWriterSink(nil, PlainFormat()).(*WriterSink)
+	if sink.writer != os.Stdout {
+		t.Errorf("expected a nil writer to default to os.Stdout")
+	}
+}
+
+func TestNewWriterSink_NilFormatterDefaultsToPlain(t *testing.T) {
+	sink := NewWriterSink(io.Discard, nil).(*WriterSink)
+	if _, ok := sink.formatter.(*PlainFormatter); !ok {
+		t.Errorf("expected a nil formatter to default to PlainFormatter, got %T", sink.formatter)
+	}
+}
+
+// formatOnlyFormatter implements Formatter but not the optional
+// appendFormatter fast path, exercising formatEntry's fallback branch.
+type formatOnlyFormatter struct{}
+
+func (formatOnlyFormatter) Format(entry LogEntry) []byte {
+	return []byte(entry.Message + "\n")
+}
+
+func TestFormatEntry_FallsBackWithoutAppendFormatter(t *testing.T) {
+	var buf bytes.Buffer
+	sink := NewWriterSink(&buf, formatOnlyFormatter{})
+
+	if err := sink.Write(LogEntry{Message: "plain-fallback"}); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if buf.String() != "plain-fallback\n" {
+		t.Errorf("expected fallback formatter output, got %q", buf.String())
+	}
+}
+
+func TestPutBuffer_DiscardsOversizedBuffer(t *testing.T) {
+	big := make([]byte, 0, 1<<17) // cap exceeds the 1<<16 retention threshold
+	putBuffer(&big)               // must return early without pooling it, and never panic
+}
+
+func TestCustomSink_NilCloseFnFallsBackToNoOp(t *testing.T) {
+	// NewCustomSink always installs a non-nil closeFn, so it can never reach
+	// CustomSink.Close's own nil-check fallback; construct one directly.
+	sink := &CustomSink{writeFn: func(LogEntry) error { return nil }}
+
+	if err := sink.Close(); err != nil {
+		t.Errorf("expected nil error from the nil-closeFn fallback, got %v", err)
 	}
 }
