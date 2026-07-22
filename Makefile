@@ -17,7 +17,7 @@
 GO              := go
 GOLANGCI_LINT   := golangci-lint
 COVERAGE_DIR    := test_coverage
-COVERAGE_MIN    := 80
+COVERAGE_MIN    := 95
 
 # VERSION must be explicitly provided for release/tag
 VERSION ?=

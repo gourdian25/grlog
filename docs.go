@@ -1,240 +1,153 @@
 // File: docs.go
 
-// Package grlog provides a high-performance, production-ready structured logging library for Go.
+// Package grlog is a zero-dependency, structured logging library for Go.
 //
-// Overview:
-// grlog is a comprehensive logging solution designed for modern cloud-native applications.
-// It features a modular architecture with pluggable sinks and formatters, zero-allocation
-// field types and formatting, and thread-safe operations suitable for high-concurrency
-// environments.
+// It gives applications leveled, typed-field logging with pluggable output
+// destinations and formats, an asynchronous mode for latency-sensitive call
+// sites, and a [log/slog] adapter so slog-based code (or dependencies) can
+// route through the same sinks. The entire implementation uses only the
+// standard library.
 //
-// Key Features:
-//   - Log levels DEBUG, INFO, WARN, ERROR, FATAL, plus OFF to disable output
-//   - Zero-allocation typed field constructors and pooled-buffer formatting
-//   - Pluggable architecture with sinks and formatters
-//   - Built-in sinks: writer/stdout, file (with rotation, compression, age-based cleanup),
-//     multi-sink, leveled sink, custom sinks
-//   - Built-in formatters: plain text and deterministic JSON
-//   - Asynchronous logging with configurable buffer size and overflow policies
-//   - log/slog interoperability via NewSlogHandler
-//   - Caller information (file:line:function) with configurable frame skipping
-//   - Context-aware logging with collision-proof typed context keys and custom extractors
-//   - Sampling for high-volume low-severity logs
-//   - Thread-safe operations; views derived via With/WithContext share one core and
-//     close exactly once
+// # Design goals
 //
-// Getting Started:
+// grlog optimizes for two things that are often in tension: a small,
+// discoverable API, and a genuinely zero-allocation hot path. Structured
+// data is passed as typed [Field] values instead of map[string]interface{},
+// so field construction and formatting avoid reflection entirely for the
+// common types (string, int, bool, duration, ...). Output destinations
+// ([LogSink]) and output formats ([Formatter]) are separate, composable
+// interfaces, so adding a destination (a database, a message queue, a test
+// buffer) never requires reimplementing text or JSON formatting.
 //
-// Basic example with default configuration:
+// grlog does not attempt to be a full observability platform: it has no
+// built-in metrics, tracing, or log shipping. It focuses on producing
+// correctly-formatted, structured log entries and getting them to one or
+// more destinations without losing them or blocking the caller more than
+// configured to.
 //
-//	package main
+// # Getting started
 //
-//	import (
-//	    "github.com/gourdian25/grlog"
-//	)
+// The zero-config path uses stdout and plain-text formatting:
 //
-//	func main() {
-//	    // Create logger with default configuration (stdout, plain text, INFO level)
-//	    logger := grlog.NewDefaultLogger()
-//	    defer logger.Close() // Important: drains async buffers; no entries are lost
+//	logger := grlog.NewDefaultLogger()
+//	defer logger.Close() // drains async buffers; safe even when async is off
 //
-//	    logger.Info("Application starting")
-//	    logger.Debug("Debug information")
-//	    logger.Warn("Warning condition detected")
-//	    logger.Error("Error occurred", grlog.Err(someError))
-//	}
+//	logger.Info("server started", grlog.Int("port", 8080))
+//	logger.Error("request failed", grlog.Err(err), grlog.String("path", "/users"))
 //
-// Log Levels:
+// [NewLogger] gives full control via functional options ([WithLevel],
+// [WithSink], [WithAsync], [WithCaller], and others documented on each
+// option).
 //
-// Log levels control message verbosity. Messages below the configured level are ignored.
-// Level order: DEBUG < INFO < WARN < ERROR < FATAL < OFF
+// # Levels
 //
-//	logger.SetLevel(grlog.WARN)      // Only WARN and above will be logged
-//	logger.SetLevel(grlog.OFF)       // Disable all logging
-//	logger.Fatal("cannot continue")  // Logs, flushes, closes, then os.Exit(1)
+// [LogLevel] values, in increasing severity, are [DEBUG], [INFO], [WARN],
+// [ERROR], and [FATAL], plus [OFF] to disable output entirely. A Logger
+// drops any entry below its configured level before doing any other work
+// ([Logger.SetLevel] uses an atomic store, so changing the level at
+// runtime — from a signal handler or an admin endpoint — is lock-free and
+// safe from any goroutine). [Logger.Fatal] logs, closes the logger to
+// flush buffered output, and then calls os.Exit(1); it is the only level
+// that terminates the process.
 //
-// Levels can be changed at runtime; reads are atomic and lock-free.
+// # Fields
 //
-// Structured Logging with Typed Fields:
+// Typed constructors — [String], [Int], [Int64], [Uint64], [Float64],
+// [Bool], [Duration], [Time], [Err], and the reflection-based fallback
+// [Any] — build a [Field] without boxing into map[string]interface{}.
+// [Err] is nil-safe: a nil error produces a [Field] that every built-in
+// [Formatter] skips entirely, so `grlog.Err(err)` can be passed
+// unconditionally at every call site.
 //
-//	logger.Info("User authenticated",
-//	    grlog.String("user_id", "12345"),
-//	    grlog.Int("attempts", 3),
-//	    grlog.Bool("success", true),
-//	    grlog.Duration("processing_time", 45*time.Millisecond),
-//	)
+// # Sinks and formatters
 //
-// Available field constructors:
-//   - String(key, value): string fields
-//   - Int(key, value), Int64(key, value), Uint64(key, value): integer fields
-//   - Float64(key, value): float fields
-//   - Bool(key, value): bool fields
-//   - Duration(key, value): time.Duration fields (rendered like "45ms")
-//   - Time(key, value): time.Time fields (rendered as RFC3339Nano)
-//   - Err(error): error field with key "error"; Err(nil) is skipped entirely
-//   - Any(key, value): fallback for any type (uses reflection)
+// A [LogSink] is a write destination; a [Formatter] turns a [LogEntry] into
+// bytes. The built-in sinks are [WriterSink] (any io.Writer; [StdoutSink]
+// is an alias), [FileSink] (size-based rotation, optional gzip compression
+// and age-based cleanup of backups), [MultiSink] (fan-out to several
+// sinks, errors aggregated with errors.Join), [LeveledSink] (wraps a sink
+// to drop entries below a per-destination minimum level — e.g. send
+// everything to stdout but only ERROR-and-above to a paging system), and
+// [CustomSink] (arbitrary write/close functions, for destinations grlog
+// doesn't ship — a database, a message queue, a metrics counter). The
+// built-in formatters are [PlainFormatter] (human-readable text) and
+// [JSONFormatter] (deterministic key order: reserved keys, then sorted
+// CustomFields, then entry fields in call order; a field whose key
+// collides with a reserved key is emitted under "fields.<key>" rather than
+// overwriting entry metadata). Sinks and formatters compose freely — any
+// sink can use any formatter.
 //
-// Formatted logging methods (Debugf, Infof, Warnf, Errorf, Fatalf) are available
-// for simple printf-style messages.
+// # Asynchronous logging
 //
-// Architecture:
+// [WithAsync] starts a single background worker consuming a buffered
+// channel, so [Logger.Info] and friends return without waiting for a sink
+// write. [WithOverflowPolicy] governs what happens when the buffer is
+// full: [OverflowSyncFallback] (the default) writes the entry synchronously
+// so nothing is ever lost; [OverflowBlock] blocks the caller until space
+// frees, preserving strict ordering; [OverflowDrop] discards the entry
+// without blocking, counted in [Logger.Stats]'s DroppedEntries. [WithSampler]
+// separately reduces volume for noisy low-severity levels, independent of
+// async — skipped entries are counted in SampledEntries. [Logger.Close]
+// always drains any buffered entries before closing sinks, whether or not
+// async is enabled.
 //
-//	Logger → LogEntry → Formatter → LogSink
+// # Context and derived loggers
 //
-// A Logger is a lightweight view onto shared state. Views derived with With or
-// WithContext add permanent fields while sharing sinks, the async queue, and the
-// worker goroutine. Calling Close on any view shuts the shared logger down exactly
-// once; further Close calls are no-ops.
+// A [Logger] returned by [NewLogger] is a lightweight view over shared
+// state (sinks, the async queue, the worker goroutine). [Logger.With]
+// derives a view that adds permanent fields to every entry it logs;
+// [Logger.WithContext] derives a view from a context.Context, surfacing
+// values stored via [ContextWithRequestID], [ContextWithTraceID], and
+// [ContextWithUserID] (collision-proof typed keys, not raw strings), plus
+// anything returned by extractors registered with [WithContextExtractor].
+// Both return new views without touching the shared state, so a base
+// logger and any number of derived views can be used concurrently. Calling
+// [Logger.Close] on any view closes the shared logger exactly once;
+// further calls on any view are no-ops.
 //
-// Sinks (Output Destinations):
+// # log/slog interoperability
 //
-// 1. WriterSink / StdoutSink: writes to any io.Writer (stdout by default)
-//
-//	stdoutSink := grlog.NewStdoutSink(grlog.PlainFormat())
-//	stderrSink := grlog.NewWriterSink(os.Stderr, grlog.JSONFormat())
-//
-// 2. FileSink: writes to files with automatic size-based rotation
-//
-//	fileSink, err := grlog.NewFileSink(grlog.FileSinkConfig{
-//	    Filename:    "myapp",
-//	    Dir:         "logs",
-//	    MaxBytes:    10 * 1024 * 1024,   // rotate at 10MB
-//	    BackupCount: 5,                  // keep 5 backups
-//	    MaxAge:      30 * 24 * time.Hour, // optional: drop backups older than 30 days
-//	    Compress:    true,               // optional: gzip rotated backups
-//	    Formatter:   grlog.JSONFormat(),
-//	})
-//
-// Rotation is safe: backup names are collision-proof (nanosecond timestamps plus a
-// sequence suffix), and if rotation fails the sink reopens the current file and keeps
-// writing, so entries are never lost to a rotation error.
-//
-// 3. MultiSink: fan-out to several sinks; errors are aggregated with errors.Join
-//
-//	multiSink := grlog.NewMultiSink(stdoutSink, fileSink)
-//
-// 4. LeveledSink: per-destination severity filtering
-//
-//	// everything to stdout, only ERROR and above to the file
-//	grlog.NewMultiSink(stdoutSink, grlog.NewLeveledSink(fileSink, grlog.ERROR))
-//
-// 5. CustomSink: implement custom logic (database, message queue, metrics, ...)
-//
-//	customSink := grlog.NewCustomSink(func(entry grlog.LogEntry) error {
-//	    // custom write logic
-//	    return nil
-//	})
-//
-// Formatters (Output Formats):
-//
-// 1. PlainFormat: human-readable text
-//
-//	// "2025-12-17 06:45:58.801 [INFO] main.go:42:main Message {key=value}"
-//
-// 2. JSONFormat: machine-readable JSON with deterministic key order
-//
-//	// {"timestamp":"...","level":"INFO","message":"Message","key":"value"}
-//
-// JSON output rules: reserved keys (timestamp, level, message, caller) come first,
-// then CustomFields in sorted order, then entry fields in the order passed. A field
-// whose key collides with a reserved key is emitted under "fields.<key>" instead of
-// overwriting entry metadata. Values that cannot be marshaled degrade to their %v
-// string form; the entry is never lost.
-//
-// Caller info is controlled by the Logger's WithCaller option; formatters render it
-// whenever the entry carries it.
-//
-// Configuration:
-//
-//	logger := grlog.NewLogger(
-//	    grlog.WithLevel(grlog.DEBUG),
-//	    grlog.WithSink(stdoutSink),
-//	    grlog.WithAsync(1000),                       // 1000-entry buffer
-//	    grlog.WithOverflowPolicy(grlog.OverflowDrop), // behavior when buffer is full
-//	    grlog.WithCaller(true),                      // include caller info
-//	    grlog.WithCallerSkip(1),                     // extra frames for wrappers
-//	    grlog.WithErrorHandler(func(err error) {}),  // sink failure callback
-//	    grlog.WithSampler(100, grlog.INFO),          // keep 1-in-100 DEBUG/INFO
-//	    grlog.WithContextFields(
-//	        grlog.String("service", "api"),
-//	    ),
-//	)
-//
-// Asynchronous Logging:
-//
-// WithAsync(n) enables a background worker consuming a buffered queue. When the
-// buffer fills, behavior follows the configured OverflowPolicy:
-//   - OverflowSyncFallback (default): write synchronously; nothing is lost, entries
-//     may appear slightly out of order
-//   - OverflowBlock: block the caller until space frees; strict ordering
-//   - OverflowDrop: drop the entry; never blocks; drops are counted in
-//     logger.Stats().DroppedEntries
-//
-// Close() stops the worker and drains the queue completely before closing sinks.
-//
-// Context-Aware Logging:
-//
-// Context values are stored under private typed keys via helper functions, so they
-// cannot collide with other packages' context values:
-//
-//	ctx := grlog.ContextWithRequestID(ctx, "req-123") // -> request_id
-//	ctx = grlog.ContextWithTraceID(ctx, "trace-456")  // -> trace_id
-//	ctx = grlog.ContextWithUserID(ctx, "user-789")    // -> user_id
-//
-//	requestLogger := logger.WithContext(ctx)
-//	requestLogger.Info("Processing request") // includes request_id, trace_id, user_id
-//
-// Custom extraction (e.g. OpenTelemetry span IDs) is supported via
-// WithContextExtractor. Permanent fields without a context are added with With:
-//
-//	dbLog := logger.With(grlog.String("component", "database"))
-//
-// log/slog Interoperability:
-//
-// grlog can serve as the backend for the standard library's log/slog:
+// [NewSlogHandler] adapts a Logger to slog.Handler, so slog-based code
+// (including third-party dependencies that log via slog) can be routed
+// through grlog's sinks and formatters:
 //
 //	slog.SetDefault(slog.New(grlog.NewSlogHandler(logger)))
-//	slog.Info("from slog", "status", 200)
 //
-// Groups become dotted keys ("req.status"); levels map Debug→DEBUG, Info→INFO,
-// Warn→WARN, Error→ERROR.
+// Levels map Debug→DEBUG, Info→INFO, Warn→WARN, Error→ERROR. slog groups
+// become dotted key prefixes ("req.status"); attributes added via
+// slog.Logger.With are preserved across the handler's WithAttrs/WithGroup.
 //
-// Error Handling:
+// # Concurrency and thread safety
 //
-// Sink write failures are reported to stderr by default, rate-limited so a
-// persistently failing sink cannot flood it. WithErrorHandler replaces this with a
-// custom callback (which must not log through the same logger).
+// A Logger and every view derived from it are safe for concurrent use.
+// The level is an atomic int32; sinks are protected by a RWMutex, and
+// [Logger.AddSink]/[Logger.RemoveSink] copy-on-write the sink slice so
+// concurrent readers never observe a partially mutated list; [Logger.Close]
+// uses a compare-and-swap so it runs its shutdown sequence exactly once no
+// matter how many views or goroutines call it. The one guarantee grlog
+// does not provide automatically: a handler passed to [WithErrorHandler]
+// must not log through the same logger it was registered on, since a
+// persistently failing sink would otherwise recurse.
 //
-// Performance:
+// # Performance
 //
-// Indicative results on Apple M-series (run `make bench` for current numbers):
-//   - Typed field construction: ~0.22 ns/op, 0 allocs
-//   - Plain formatting: ~78-150 ns/op, 0 allocs (pooled buffers)
-//   - JSON formatting (3 fields): ~205 ns/op, 1 alloc
-//   - Sync log without fields: ~125 ns/op, 0 allocs
-//   - Filtered-out log call: ~2.7 ns/op, 0 allocs
-//   - Caller info adds ~500 ns/op (runtime.Caller); disable on hot paths
+// Typed field construction and both built-in formatters avoid allocation
+// on their common paths (formatters reuse pooled buffers internally); a
+// filtered-out log call — one below the configured level — costs a single
+// atomic load and returns. These properties are asserted, not just
+// claimed: see the zero-allocs-per-op assertions in the module's benchmark
+// suite. Run `go test -bench=. -benchmem -run=^$` for current numbers on
+// your hardware; enabling [WithCaller] adds a runtime.Caller lookup
+// (worth avoiding on the hottest paths).
 //
-// Best Practices:
+// # Limitations
 //
-//  1. Always defer logger.Close() — it drains async buffers.
-//  2. Choose appropriate levels: DEBUG/INFO in development, INFO/WARN in production.
-//  3. Prefer typed fields over Any() (reflection).
-//  4. Size async buffers for your burst profile and pick an OverflowPolicy explicitly.
-//  5. Use WithContext/With for request- and component-scoped fields.
-//  6. Disable caller info on hot paths.
-//  7. Monitor logger.Stats() when using OverflowDrop or sampling.
-//
-// Testing:
-//
-// Use NewWriterSink with a bytes.Buffer, or NewCustomSink, to capture output:
-//
-//	var buf bytes.Buffer
-//	logger := grlog.NewLogger(
-//	    grlog.WithSink(grlog.NewWriterSink(&buf, grlog.PlainFormat())),
-//	    grlog.WithCaller(false),
-//	)
-//
-// License: MIT
-// Repository: https://github.com/gourdian25/grlog
+// grlog does not redact or scope sensitive field values — callers are
+// responsible for not logging secrets, tokens, or raw PII. The plain-text
+// formatter does not escape newlines in messages or field values (prefer
+// [JSONFormatter] when output is consumed by another system, since its
+// escaping is complete). There are no built-in network, database, or
+// message-queue sinks; reach those through [CustomSink] or by implementing
+// [LogSink] directly. There is no built-in facility for redacting or
+// masking specific fields.
 package grlog

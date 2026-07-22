@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Test coverage pass ahead of the ecosystem-wide flatten/pgx+sqlc/95%-coverage
+initiative: no functional/API changes.
+
+### Added
+
+- `grlog_regression_test.go`: ~30 tests closing coverage gaps in the
+  `log/slog` adapter (`appendSlogAttr`'s remaining `Kind` branches and group
+  handling, `Handle`'s level/closed/sampling/zero-timestamp branches,
+  `WithAttrs`/`WithGroup`'s no-op shortcuts, `callerFromPC`'s invalid-PC
+  paths), `dispatch`'s `OverflowBlock` policy (both the normal-send and
+  shutdown-direct-write branches), the default stderr error handler's
+  rate-limiting/suppressed-count reporting, `FileSink.cleanupOldBackups`'s
+  age-based path, `Logger.With`/`WithContext`'s no-op shortcuts,
+  `Logger.Close`'s sink-close-error propagation, `NewWriterSink`'s nil
+  writer/formatter defaults, `formatEntry`'s non-`appendFormatter` fallback,
+  `putBuffer`'s oversized-buffer discard, and `CustomSink.Close`'s genuine
+  nil-`closeFn` fallback (previously unreachable via `NewCustomSink`, which
+  always installs a non-nil default). Raises measured coverage from 88.3%
+  to 95%+.
+
+### Documentation
+
+- README: corrected the stale "Statement Coverage" figure (~88%) in the
+  Testing section to the freshly-verified 95.0-95.1% (root package, via
+  `make coverage-summary` and `make coverage-check`, 2026-07-22). This
+  follows the Makefile's `COVERAGE_MIN` already having been raised from 80
+  to 95 in a prior commit this session, matching the rest of the ecosystem.
+
 ## [0.1.1] - 2026-07-10
 
 Ecosystem-alignment pass ahead of `grauth`: no functional/API changes.
