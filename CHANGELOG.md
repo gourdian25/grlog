@@ -27,6 +27,14 @@ initiative: no functional/API changes.
   always installs a non-nil default). Raises measured coverage from 88.3%
   to 95%+.
 
+### Documentation
+
+- README: corrected the stale "Statement Coverage" figure (~88%) in the
+  Testing section to the freshly-verified 95.0-95.1% (root package, via
+  `make coverage-summary` and `make coverage-check`, 2026-07-22). This
+  follows the Makefile's `COVERAGE_MIN` already having been raised from 80
+  to 95 in a prior commit this session, matching the rest of the ecosystem.
+
 ## [0.1.1] - 2026-07-10
 
 Ecosystem-alignment pass ahead of `grauth`: no functional/API changes.

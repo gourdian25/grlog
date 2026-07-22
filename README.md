@@ -2050,7 +2050,7 @@ benchstat baseline.txt new.txt
 
 | Metric | Value | Details |
 |--------|-------|---------|
-| **Statement Coverage** | ~88% | 150+ tests (`make coverage-summary` for current numbers) |
+| **Statement Coverage** | 95.0-95.1% | 150+ tests, verified via `make coverage-summary` / `make coverage-check` on 2026-07-22 |
 | **Race Detection Tests** | 20+ | All concurrent scenarios, run in CI with `-race` |
 | **Regression Tests** | ✅ | Shutdown drain, rotation safety, JSON collisions, view close semantics |
 
