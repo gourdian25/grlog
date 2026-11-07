@@ -611,7 +611,7 @@ logging library: every sibling repo exposes an optional `Logger` interface
 - [graudit](https://github.com/gourdian25/graudit) — an append-only,
   hash-chained, tamper-evident audit log.
 - [grpolicy](https://github.com/gourdian25/grpolicy) — attribute-based
-  policy evaluation (RBAC/ABAC), with no built-in notion of "user" or
+  policy evaluation, with no built-in notion of "user" or
   "role".
 - [grnoti](https://github.com/gourdian25/grnoti) — a push-notification
   service: FCM dispatch, idempotent event processing, device-token
